@@ -177,13 +177,16 @@ func main() {
 	goDNS := flag.String("go-dns", "yandex", "DNS для VK (yandex/cloudflare/google, doh-yandex/doh-cloudflare/doh-google, custom:IP или doh:URL)")
 	obfsMode := flag.String("obfs", "audio", "режим обфускации (audio/video)")
 	checkHashes := flag.Bool("check-hashes", false, "проверить VK-хеши и выйти")
-	connMode := flag.String("mode", "vpn", "режим клиента (vpn|socks)")
+	connMode := flag.String("mode", "vpn", "режим клиента (vpn|socks|rawtun)")
 	socksAddr := flag.String("socks", "127.0.0.1:1080", "локальный SOCKS5 (только -mode socks)")
 
 	flag.Parse()
 	applyCompatFlags(vkAuthMode, vkAnonPath)
 	activeConnMode := strings.ToLower(strings.TrimSpace(*connMode))
-	if activeConnMode != "socks" {
+	switch activeConnMode {
+	case "socks":
+	case "rawtun":
+	default:
 		activeConnMode = "vpn"
 	}
 	setupGlobalResolver(*goDNS)
@@ -286,6 +289,33 @@ func main() {
 		// Если все хеши провалились
 		fmt.Printf("PING_ERROR|All hashes failed. Last error: %v\n", lastErr)
 		os.Exit(1)
+	}
+
+
+	if activeConnMode == "rawtun" {
+		wrapStatus := "OFF"
+		if len(wrapKey) == wrapKeyLen {
+			wrapStatus = "ON (password HKDF + RTP AEAD)"
+		}
+		numGroups := (*numW + workersPerGroup - 1) / workersPerGroup
+		log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
+		log.Printf("[КЛИЕНТ] Воркеров: %d (групп: %d, по %d)", *numW, numGroups, workersPerGroup)
+		log.Printf("[КЛИЕНТ] Пир (raw): %s", *peerAddr)
+		log.Printf("[КЛИЕНТ] Режим: rawtun (TUN + WRAP, без DTLS/WG)")
+		log.Printf("[КЛИЕНТ] WRAP: %s", wrapStatus)
+		log.Printf("[КЛИЕНТ] Device ID: %s", *deviceID)
+		log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
+
+		stats := NewStats()
+		shutdownCh := make(chan struct{})
+		go func() {
+			<-ctx.Done()
+			close(shutdownCh)
+		}()
+		go stats.RunLoop(shutdownCh)
+
+		runRawTunClient(ctx, tp, peer, *numW, *deviceID, *connPassword, stats, &pauseFlag)
+		return
 	}
 
 	// Слушаем локально (SO_REUSEADDR — быстрый перезапуск без «address already in use»)
