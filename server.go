@@ -1723,6 +1723,11 @@ generate:
 // ==================== NAT ====================
 
 func setupFullConeNAT(wgIface string) error {
+	if keeneticNoNAT {
+		log.Println("[NAT] пропуск (-no-nat)")
+		natType = "disabled (-no-nat)"
+		return nil
+	}
 	log.Println("[NAT] ══════════════════════════════════════")
 
 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
@@ -1763,6 +1768,11 @@ func setupNftNAT(extIface string) {
 // выше не трогаются), setupForwardRules переиспользуется как есть — она уже
 // параметризована только именем интерфейса.
 func setupRawNAT(rawIface string) error {
+	if keeneticNoNAT {
+		log.Println("[RAW-NAT] пропуск (-no-nat)")
+		setupForwardRules(rawIface)
+		return nil
+	}
 	extIface := getDefaultInterface()
 	log.Printf("[RAW-NAT] Внешний: %s", extIface)
 
