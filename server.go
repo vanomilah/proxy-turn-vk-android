@@ -2865,6 +2865,8 @@ func (c *directConn) SetDeadline(t time.Time) error      { return c.pc.SetDeadli
 func (c *directConn) SetReadDeadline(t time.Time) error  { return c.pc.SetReadDeadline(t) }
 func (c *directConn) SetWriteDeadline(t time.Time) error { return c.pc.SetWriteDeadline(t) }
 
+const dtlsConnIdle = 90 * time.Second
+
 func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgDev *device.Device, keys *wgKeys) {
 	atomic.AddInt64(&totalConns, 1)
 
@@ -3074,7 +3076,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 				return
 			default:
 			}
-			clientConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
+			clientConn.SetReadDeadline(time.Now().Add(dtlsConnIdle))
 			nn, err := clientConn.Read(*b)
 			if err != nil {
 				return
@@ -3107,7 +3109,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 				return
 			default:
 			}
-			wgConn.SetReadDeadline(time.Now().Add(30 * time.Minute))
+			wgConn.SetReadDeadline(time.Now().Add(dtlsConnIdle))
 			nn, err := wgConn.Read(*b)
 			if err != nil {
 				if isNetTimeout(err) {
