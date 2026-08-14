@@ -46,8 +46,9 @@ import (
 	pionudp "github.com/pion/transport/v4/udp"
 )
 
+var wgIfaceName = "wdtt0"
+
 const (
-	wgIfaceName           = "wdtt0"
 	wgServerAddr          = "10.66.66.1"
 	wgServerCIDR          = wgServerAddr + "/16"
 	defaultInternalWGPort = 56001
@@ -2600,8 +2601,16 @@ func main() {
 	adminID := flag.String("admin", "", "Telegram Admin ID")
 	botToken := flag.String("bot-token", "", "Telegram Bot Token")
 	dnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")
+	flagNoNAT := flag.Bool("no-nat", false, "skip iptables/nft NAT (awg-manager на роутере)")
+	flagWGIface := flag.String("wg-iface", "", "userspace WG iface (opkgtunN для Keenetic)")
+	flagNatIface := flag.String("nat-if", "", "egress interface for MASQUERADE")
 	flag.Parse()
 	dns = *dnsFlag
+	keeneticNoNAT = *flagNoNAT
+	keeneticNatIface = strings.TrimSpace(*flagNatIface)
+	if n := strings.TrimSpace(*flagWGIface); n != "" {
+		wgIfaceName = n
+	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Println("══════════════════════════════════════════")
