@@ -26,7 +26,7 @@ jobs:
           cd go_client
           build() { # $1 goarch  $2 имя артефакта  $3 доп. env
             env GOOS=linux GOARCH="$1" CGO_ENABLED=0 $3 \
-              go build -trimpath -ldflags="-s -w" -o "../dist/$2" .
+              go build -trimpath -buildvcs=false -ldflags="-s -w" -o "../dist/$2" .
           }
           # Имена трогать нельзя: на них смотрят пины в internal/wdtt/install.go.
           build arm64  wt-client-linux-arm64             ""
