@@ -475,7 +475,7 @@ func getNextIP() string {
 	for b3 := 0; b3 <= 255; b3++ {
 		for b4 := 1; b4 <= 254; b4++ {
 			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
-			if ip == "10.66.66.1" {
+			if ip == "10.66.66.1" || ip == "10.66.0.1" {
 				continue
 			}
 			if !used[ip] {
