@@ -1,0 +1,39 @@
+name: awgm server release
+
+# Тег awgm-server-* — только наш префикс. Апстримовые vX.Y.Z и v1.4.0-beta
+# под него не попадают, а компонент читается прямо из имени тега:
+# у репозитория две ветки (awg-client, awg-server) с разными артефактами.
+on:
+  push:
+    tags: ['awgm-server-*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build router binaries
+        run: |
+          set -e
+          mkdir -p dist
+          build() { # $1 goarch  $2 имя артефакта  $3 доп. env
+            env GOOS=linux GOARCH="$1" CGO_ENABLED=0 $3 \
+              go build -trimpath -ldflags="-s -w" -o "dist/$2" .
+          }
+          # Имена трогать нельзя: на них смотрят пины в internal/wdtt/install.go.
+          build arm64  wdtt-server-linux-arm64             ""
+          build mipsle wdtt-server-linux-mipsle-softfloat  "GOMIPS=softfloat"
+          build mips   wdtt-server-linux-mips-softfloat    "GOMIPS=softfloat"
+          (cd dist && sha256sum * > checksums.txt && cat checksums.txt)
+
+      - name: Release
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "wdtt-server для Keenetic (awg-manager) — флаги -no-nat, -wg-iface, -nat-if"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
