@@ -1559,7 +1559,7 @@ func statsLoop(ctx context.Context, configDir string) {
 			updateTrafficFromWG()
 			fromC := atomic.LoadInt64(&totalBytesFromClient)
 			toC := atomic.LoadInt64(&totalBytesToClient)
-			active := atomic.LoadInt32(&activeConns)
+			active := countActiveDevices()
 			total := atomic.LoadInt64(&totalConns)
 			uptime := time.Since(serverStartTime)
 
