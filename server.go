@@ -1732,7 +1732,10 @@ func setupFullConeNAT(wgIface string) error {
 
 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
 
-	extIface := getDefaultInterface()
+	extIface := keeneticNatIface
+	if extIface == "" {
+		extIface = getDefaultInterface()
+	}
 	log.Printf("[NAT] Внешний: %s", extIface)
 
 	switch {
@@ -1773,7 +1776,10 @@ func setupRawNAT(rawIface string) error {
 		setupForwardRules(rawIface)
 		return nil
 	}
-	extIface := getDefaultInterface()
+	extIface := keeneticNatIface
+	if extIface == "" {
+		extIface = getDefaultInterface()
+	}
 	log.Printf("[RAW-NAT] Внешний: %s", extIface)
 
 	switch {
