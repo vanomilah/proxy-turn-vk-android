@@ -181,6 +181,7 @@ func main() {
 	socksAddr := flag.String("socks", "127.0.0.1:1080", "локальный SOCKS5 (только -mode socks)")
 
 	flag.Parse()
+	applyCompatFlags(vkAuthMode, vkAnonPath)
 	activeConnMode := strings.ToLower(strings.TrimSpace(*connMode))
 	if activeConnMode != "socks" {
 		activeConnMode = "vpn"
