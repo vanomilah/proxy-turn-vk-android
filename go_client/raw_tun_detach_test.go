@@ -3,17 +3,18 @@ package main
 import (
 	"errors"
 	"net"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
 
 // fakePC — источник, который отдаёт пакеты из канала, а после Close только
-// ошибки; считает попытки чтения.
+// ошибки. Close идемпотентен: один и тот же источник закрывают и шаг теста, и
+// уборка.
 type fakePC struct {
-	pkt   chan byte
-	done  chan struct{}
-	reads atomic.Int64
+	pkt  chan byte
+	done chan struct{}
+	once sync.Once
 }
 
 func newFakePC() *fakePC {
@@ -21,7 +22,6 @@ func newFakePC() *fakePC {
 }
 
 func (f *fakePC) ReadFrom(b []byte) (int, net.Addr, error) {
-	f.reads.Add(1)
 	select {
 	case v := <-f.pkt:
 		b[0] = v
@@ -31,7 +31,7 @@ func (f *fakePC) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 }
 func (f *fakePC) WriteTo([]byte, net.Addr) (int, error) { return 0, nil }
-func (f *fakePC) Close() error                          { close(f.done); return nil }
+func (f *fakePC) Close() error                          { f.once.Do(func() { close(f.done) }); return nil }
 func (f *fakePC) LocalAddr() net.Addr                   { return &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)} }
 func (f *fakePC) SetDeadline(time.Time) error           { return nil }
 func (f *fakePC) SetReadDeadline(time.Time) error       { return nil }
@@ -40,11 +40,30 @@ func (f *fakePC) SetWriteDeadline(time.Time) error      { return nil }
 func TestPendingAttachDetachAttach(t *testing.T) {
 	p := newPendingPacketConn()
 	got := make(chan byte, 4)
+
+	// stop гасит читателя на уборке: без этого горутина остаётся навсегда
+	// заблокированной в ReadFrom и держит *testing.T — тот самый шаблон, что
+	// даёт «Log in goroutine after test has completed».
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+	var sources []*fakePC
+	newSource := func() *fakePC {
+		f := newFakePC()
+		sources = append(sources, f)
+		return f
+	}
+
 	go func() {
+		defer close(readerDone)
 		buf := make([]byte, 8)
 		for {
 			n, _, err := p.ReadFrom(buf)
 			if err != nil {
+				select {
+				case <-stop:
+					return // уборка, а не находка
+				default:
+				}
 				t.Errorf("ReadFrom вынес ошибку открепления наружу: %v", err)
 				return
 			}
@@ -54,6 +73,23 @@ func TestPendingAttachDetachAttach(t *testing.T) {
 		}
 	}()
 
+	t.Cleanup(func() {
+		close(stop)
+		// Разбудить читателя, где бы он ни стоял: внутри источника — закрытием
+		// источников, на ожидании прикрепления — прикреплением мёртвого.
+		for _, f := range sources {
+			_ = f.Close()
+		}
+		dead := newFakePC()
+		_ = dead.Close()
+		p.Attach(dead)
+		select {
+		case <-readerDone:
+		case <-time.After(5 * time.Second):
+			t.Error("читатель не завершился — горутина утекла")
+		}
+	})
+
 	// 1. До Attach читатель обязан блокироваться.
 	select {
 	case b := <-got:
@@ -62,7 +98,7 @@ func TestPendingAttachDetachAttach(t *testing.T) {
 	}
 
 	// 2. Первое прикрепление.
-	a := newFakePC()
+	a := newSource()
 	p.Attach(a)
 	a.pkt <- 'a'
 	select {
@@ -78,26 +114,24 @@ func TestPendingAttachDetachAttach(t *testing.T) {
 	// дескриптора. Ошибка чтения на закрытом источнике наружу выйти не должна.
 	p.Detach()
 	_ = a.Close()
-	time.Sleep(300 * time.Millisecond)
 
 	// Читатель обязан снова блокироваться, а не крутиться: канал ready заведён
 	// заново. Закрытый ready дал бы busy-loop без единого чтения источника.
+	// Состояние ставит сам Detach, поэтому ждать нечего — проверка без пауз.
 	p.mu.Lock()
-	ready := p.ready
+	real, ready := p.real, p.ready
 	p.mu.Unlock()
+	if real != nil {
+		t.Fatal("после Detach источник не отцеплен")
+	}
 	select {
 	case <-ready:
 		t.Fatal("после Detach канал ready закрыт — ReadFrom будет крутиться вхолостую")
 	default:
 	}
-	select {
-	case b := <-got:
-		t.Fatalf("после Detach прочитал %q", b)
-	default:
-	}
 
 	// 4. Повторное прикрепление — Attach обязан закрыть новый ready.
-	c := newFakePC()
+	c := newSource()
 	p.Attach(c)
 	c.pkt <- 'b'
 	select {
@@ -112,5 +146,5 @@ func TestPendingAttachDetachAttach(t *testing.T) {
 	// 5. Attach без Detach между ними не должен ронять процесс закрытием уже
 	// закрытого канала. Сегодня слот так не зовёт, но цена ошибки — паника в
 	// рабочем процессе, а не отказ команды.
-	p.Attach(newFakePC())
+	p.Attach(newSource())
 }

@@ -23,7 +23,13 @@ jobs:
       # быть замеченным после выкладки артефактов. -short выключает единственный
       # сетевой тест апстрима (DoH), чтобы релиз не зависел от чужого резолвера.
       - name: Test go_client
-        run: cd go_client && go test -short -race ./...
+        run: |
+          set -e
+          cd go_client
+          # gofmt сам по себе не даёт ненулевого кода — сравниваем вывод.
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo 'gofmt: дерево не отформатировано'; exit 1; }
+          go vet ./...
+          go test -short -race ./...
 
       - name: Build router binaries
         run: |
