@@ -353,6 +353,52 @@ func TestAwgmSetupReportsJournalFailure(t *testing.T) {
 	}
 }
 
+// TestSetupWritesLastErrorOnce — в awgmSetup ровно одно присвоение lastError.
+//
+// Отказов обвязки на старте три (журнал, перенаправление вывода, отпечаток
+// бинаря), и они копятся в один список: причина слепоты не должна затираться
+// причиной помельче. Второе присвоение вернуло бы затирание — молча, потому
+// что одновременный отказ двух подсистем в тесте не воспроизвести (BinarySHA256
+// отказывает только при недоступном /proc/self/exe).
+func TestSetupWritesLastErrorOnce(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "awgm_control.go", nil, 0)
+	if err != nil {
+		t.Fatalf("разбор awgm_control.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range f.Decls {
+		if d, ok := d.(*ast.FuncDecl); ok && d.Recv == nil && d.Name.Name == "awgmSetup" {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatal("в awgm_control.go нет func awgmSetup")
+	}
+
+	var at []string
+	ast.Inspect(fn, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range as.Lhs {
+			sel, ok := lhs.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "lastError" {
+				continue
+			}
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "awgmState" {
+				at = append(at, fset.Position(as.Pos()).String())
+			}
+		}
+		return true
+	})
+
+	if len(at) != 1 {
+		t.Fatalf("присвоений awgmState.lastError в awgmSetup: %d (%v), ожидали одно — иначе отказы затирают друг друга", len(at), at)
+	}
+}
+
 // withAwgmGlobals изолирует тест от глобального состояния обвязки.
 //
 // Сохраняет и возвращает os.Args, awgmOpts и awgmState, а заодно дескрипторы
