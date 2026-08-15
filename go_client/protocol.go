@@ -55,5 +55,3 @@ func SendAuth(conn net.Conn, deviceID, password string) error {
 
 	return nil
 }
-
-

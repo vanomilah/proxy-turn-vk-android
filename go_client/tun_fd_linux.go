@@ -48,7 +48,7 @@ func (c *fdPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
 }
 
 func (c *fdPacketConn) Close() error                       { return c.f.Close() }
-func (c *fdPacketConn) LocalAddr() net.Addr                  { return &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (c *fdPacketConn) LocalAddr() net.Addr                { return &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)} }
 func (c *fdPacketConn) SetDeadline(t time.Time) error      { return c.f.SetDeadline(t) }
 func (c *fdPacketConn) SetReadDeadline(t time.Time) error  { return c.f.SetReadDeadline(t) }
 func (c *fdPacketConn) SetWriteDeadline(t time.Time) error { return c.f.SetWriteDeadline(t) }

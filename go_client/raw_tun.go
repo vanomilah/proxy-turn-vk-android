@@ -19,8 +19,8 @@ const tunVirtioHdrLen = 10
 
 // pendingPacketConn блокирует ReadFrom до Attach (TUN после RAWCONF).
 type pendingPacketConn struct {
-	mu   sync.Mutex
-	real net.PacketConn
+	mu    sync.Mutex
+	real  net.PacketConn
 	ready chan struct{}
 }
 

@@ -31,8 +31,8 @@ func (p *pipeConn) Write(b []byte) (int, error) {
 }
 
 func (p *pipeConn) Close() error                       { return p.pc.Close() }
-func (p *pipeConn) LocalAddr() net.Addr                  { return p.pc.LocalAddr() }
-func (p *pipeConn) RemoteAddr() net.Addr                 { return p.peer }
+func (p *pipeConn) LocalAddr() net.Addr                { return p.pc.LocalAddr() }
+func (p *pipeConn) RemoteAddr() net.Addr               { return p.peer }
 func (p *pipeConn) SetDeadline(t time.Time) error      { return p.pc.SetDeadline(t) }
 func (p *pipeConn) SetReadDeadline(t time.Time) error  { return p.pc.SetReadDeadline(t) }
 func (p *pipeConn) SetWriteDeadline(t time.Time) error { return p.pc.SetWriteDeadline(t) }

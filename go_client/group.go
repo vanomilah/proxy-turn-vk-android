@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-
 const workersPerGroup = 9
 
 // WorkerGroup:
@@ -287,10 +286,10 @@ func normalizeVKJoinHash(input string) string {
 
 // TurnParams — конфигурация TURN
 type TurnParams struct {
-	Host    string
-	Port    string
-	Hashes  []string
-	WrapKey []byte // Password-derived WRAP key (32 bytes), nil = disabled
+	Host     string
+	Port     string
+	Hashes   []string
+	WrapKey  []byte // Password-derived WRAP key (32 bytes), nil = disabled
 	ObfsMode string // "audio" or "video" — RTP masking mode
 }
 
@@ -301,5 +300,3 @@ type Credentials struct {
 	TurnURLs      []string
 	CacheStreamID int
 }
-
-

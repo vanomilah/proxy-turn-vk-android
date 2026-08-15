@@ -291,7 +291,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	if activeConnMode == "rawtun" {
 		wrapStatus := "OFF"
 		if len(wrapKey) == wrapKeyLen {

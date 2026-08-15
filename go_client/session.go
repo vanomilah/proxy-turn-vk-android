@@ -470,14 +470,22 @@ func RunPing(
 	if err != nil {
 		return 0, err
 	}
-	if tp.Host != "" { urlhost = tp.Host }
-	if tp.Port != "" { urlport = tp.Port }
+	if tp.Host != "" {
+		urlhost = tp.Host
+	}
+	if tp.Port != "" {
+		urlport = tp.Port
+	}
 	turnAddr := net.JoinHostPort(urlhost, urlport)
 
 	resolved, err := net.ResolveUDPAddr("udp", turnAddr)
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	c, err := net.DialUDP("udp", nil, resolved)
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	defer c.Close()
 
 	var turnConn net.PacketConn = &connectedUDPConn{c}
@@ -499,13 +507,19 @@ func RunPing(
 		RequestedAddressFamily: addrFamily,
 		LoggerFactory:          &NullLoggerFactory{},
 	})
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	defer tc.Close()
 
-	if err = tc.Listen(); err != nil { return 0, err }
+	if err = tc.Listen(); err != nil {
+		return 0, err
+	}
 
 	relay, err := tc.Allocate()
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	defer relay.Close()
 
 	pipeA, pipeB := connutil.AsyncPacketPipe()
@@ -534,12 +548,18 @@ func RunPing(
 		plain := make([]byte, readBufSize)
 		for {
 			n, _, err := relay.ReadFrom(buf)
-			if err != nil { return }
+			if err != nil {
+				return
+			}
 			payload := buf[:n]
 			if useWrap {
-				if !obfsIsRTPPacket(payload) { continue }
+				if !obfsIsRTPPacket(payload) {
+					continue
+				}
 				m, err := obfsUnwrapPacket(tp.WrapKey, payload, plain)
-				if err != nil { continue }
+				if err != nil {
+					continue
+				}
 				payload = plain[:m]
 			}
 			_, _ = pipeA.WriteTo(payload, peer)
@@ -553,11 +573,15 @@ func RunPing(
 		b := make([]byte, readBufSize)
 		for {
 			n, _, err := pipeA.ReadFrom(b)
-			if err != nil { return }
+			if err != nil {
+				return
+			}
 			out := b[:n]
 			if useWrap {
 				wrapped, err := obfsWrapPacket(tp.WrapKey, out, obfsCfg, obfsWriteState)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				out = wrapped
 			}
 			_, _ = relay.WriteTo(out, peer)
@@ -565,7 +589,9 @@ func RunPing(
 	}()
 
 	cert, err := selfsign.GenerateSelfSigned()
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 
 	dtlsCfg := &dtls.Config{
 		Certificates:          []tls.Certificate{cert},
@@ -577,14 +603,18 @@ func RunPing(
 	}
 
 	dtlsConn, err := dtls.Client(pipeB, peer, dtlsCfg)
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	defer dtlsConn.Close()
 
 	hctx, hcancel := context.WithTimeout(sessCtx, 15*time.Second)
 	defer hcancel()
 
 	err = dtlsConn.HandshakeContext(hctx)
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 
 	rtt := time.Since(startPing).Milliseconds()
 	// Handshake completes -> we have a successful round trip!
