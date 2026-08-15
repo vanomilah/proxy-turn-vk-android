@@ -19,6 +19,12 @@ jobs:
         with:
           go-version-file: go_client/go.mod
 
+      # Тесты идут ДО сборки: провалившийся страж обязан остановить релиз, а не
+      # быть замеченным после выкладки артефактов. -short выключает единственный
+      # сетевой тест апстрима (DoH), чтобы релиз не зависел от чужого резолвера.
+      - name: Test go_client
+        run: cd go_client && go test -short -race ./...
+
       - name: Build router binaries
         run: |
           set -e
