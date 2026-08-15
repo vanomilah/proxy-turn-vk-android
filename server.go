@@ -2608,6 +2608,7 @@ func handleAPIProfileUnbind(w http.ResponseWriter, r *http.Request) {
 // ==================== Main ====================
 
 func main() {
+	awgmSetup()
 	listen := flag.String("listen", "0.0.0.0:56000", "DTLS адрес")
 	listenDirect := flag.String("listen-direct", "", "адрес для клиентов без DTLS (RTP-obfs AEAD напрямую); пусто = выключено")
 	listenRaw := flag.String("listen-raw", "", "адрес для raw-IP клиентов без WireGuard (свой TUN/NAT); пусто = выключено")
@@ -2653,6 +2654,7 @@ func main() {
 					log.Println("[SYS] База паролей успешно перезагружена! Активных ключей в памяти:", serverWrapKeys.Count())
 				}
 			} else {
+				awgmPushExit(0)
 				cancel()
 				dbMutex.Lock()
 				flushRawDeviceTrafficLocked()

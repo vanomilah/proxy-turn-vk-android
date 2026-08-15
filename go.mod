@@ -10,8 +10,9 @@ require (
 )
 
 require (
+	github.com/hoaxisr/awg-manager/awgmproto v0.1.0
 	github.com/pion/logging v0.2.4 // indirect
 	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
