@@ -1,7 +1,7 @@
 package main
 
 var (
-	keeneticNoNAT   bool
+	keeneticNoNAT    bool
 	keeneticNatIface string
 )
 

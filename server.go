@@ -1387,7 +1387,7 @@ type rawTrafficCounter struct {
 
 var (
 	rawDeviceTrafficMu sync.Mutex
-	rawDeviceTraffic    = make(map[string]*rawTrafficCounter)
+	rawDeviceTraffic   = make(map[string]*rawTrafficCounter)
 )
 
 func addRawUplinkBytes(deviceID string, n int64) {
