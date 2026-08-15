@@ -1,7 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -146,4 +152,174 @@ func TestAwgmTunSlotDetachUnwiresClient(t *testing.T) {
 		t.Fatalf("запись во второй дескриптор: %v", err)
 	}
 	expectPacket(t, got2, "D", "после detach слот не принимает новый дескриптор: смена интерфейса сломана")
+}
+
+// TestAwgmSetupCleanStartLeavesLastErrorEmpty — обратный случай: при исправном
+// старте поле молчит.
+//
+// У этой роли last_error заполняется РОВНО отказами самой обвязки и ничем
+// больше (§6.1): классификатора строк журнала нет, и после старта поле молчит
+// обо всём. Без этой проверки «всегда непустой last_error» прошёл бы незамеченным.
+func TestAwgmSetupCleanStartLeavesLastErrorEmpty(t *testing.T) {
+	withAwgmGlobals(t)
+
+	os.Args = []string{"wt-client",
+		"--awgm-log-file=" + t.TempDir() + "/awgm.log",
+		"-mode", "rawtun",
+	}
+	rest := awgmSetup()
+
+	// Перезапись argv — условие того, что flag.Parse форка не увидит
+	// awgm-флагов и не завершит процесс кодом 2.
+	for _, a := range rest {
+		if strings.HasPrefix(a, "--awgm-") {
+			t.Fatalf("awgm-флаг остался в argv форка: %q", a)
+		}
+	}
+	if len(os.Args) != len(rest)+1 {
+		t.Errorf("os.Args не перезаписан: %v", os.Args)
+	}
+
+	st := awgmState.snapshot()
+	if st.LastError != "" {
+		t.Errorf("last_error = %q при исправном старте, ожидали пустую строку", st.LastError)
+	}
+	if st.Mode != awgmModeRaw {
+		t.Errorf("mode = %q, ожидали %q", st.Mode, awgmModeRaw)
+	}
+	if awgmLog == nil {
+		t.Error("журнал открылся, а awgmLog не выставлен")
+	}
+}
+
+// TestAwgmSetupReportsJournalFailure — недоступный журнал обязан доехать до
+// менеджера полем last_error.
+//
+// Это единственный отказ, о котором роль говорит в last_error, и обойтись
+// журналом здесь нельзя по построению: журнала-то и нет. Сообщение уехало бы в
+// унаследованный stderr, а менеджер не узнал бы ни причины, ни факта.
+func TestAwgmSetupReportsJournalFailure(t *testing.T) {
+	withAwgmGlobals(t)
+
+	// Каталога нет — OpenLog отказывает предсказуемо и без прав root.
+	os.Args = []string{"wt-client",
+		"--awgm-log-file=" + t.TempDir() + "/нет-каталога/awgm.log",
+		"-mode", "rawtun",
+	}
+	awgmSetup()
+
+	// Через JSON: проверяем, что причина именно ДОЕЗЖАЕТ в state, а не просто
+	// лежит в поле структуры.
+	raw, err := json.Marshal(awgmState.snapshot())
+	if err != nil {
+		t.Fatalf("сериализация state: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("разбор state: %v", err)
+	}
+	msg, _ := got["last_error"].(string)
+	if msg == "" {
+		t.Fatal("last_error пуст при недоступном журнале: менеджер не узнает ни причины, ни факта")
+	}
+	// Префикс короткий и стабильный — его показывают в интерфейсе, и он не
+	// зависит от текста ошибки ядра.
+	const prefix = "журнал недоступен: "
+	if !strings.HasPrefix(msg, prefix) {
+		t.Errorf("last_error = %q, ожидали префикс %q", msg, prefix)
+	}
+	if awgmLog != nil {
+		t.Error("журнал не открылся, а awgmLog выставлен")
+	}
+}
+
+// TestSetupWritesLastErrorOnce — в awgmSetup ровно одно присвоение lastError.
+//
+// Отказов обвязки на старте три (журнал, перенаправление вывода, отпечаток
+// бинаря), и они копятся в один список: причина слепоты не должна затираться
+// причиной помельче. Второе присвоение вернуло бы затирание — молча, потому
+// что одновременный отказ двух подсистем в тесте не воспроизвести (BinarySHA256
+// отказывает только при недоступном /proc/self/exe).
+func TestSetupWritesLastErrorOnce(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "awgm_control.go", nil, 0)
+	if err != nil {
+		t.Fatalf("разбор awgm_control.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range f.Decls {
+		if d, ok := d.(*ast.FuncDecl); ok && d.Recv == nil && d.Name.Name == "awgmSetup" {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatal("в awgm_control.go нет func awgmSetup")
+	}
+
+	var at []string
+	ast.Inspect(fn, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range as.Lhs {
+			sel, ok := lhs.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "lastError" {
+				continue
+			}
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "awgmState" {
+				at = append(at, fset.Position(as.Pos()).String())
+			}
+		}
+		return true
+	})
+
+	if len(at) != 1 {
+		t.Fatalf("присвоений awgmState.lastError в awgmSetup: %d (%v), ожидали одно — иначе отказы затирают друг друга", len(at), at)
+	}
+}
+
+// withAwgmGlobals изолирует тест от глобального состояния обвязки.
+//
+// Сохраняет и возвращает os.Args, awgmOpts и awgmState, а заодно дескрипторы
+// 1 и 2: RedirectStdio внутри awgmSetup накрывает дескрипторы САМОГО процесса,
+// а процесс здесь — тестовый бинарь. Без их возврата весь дальнейший вывод
+// прогона уходит в журнал, и падение соседнего теста остаётся без текста.
+func withAwgmGlobals(t *testing.T) {
+	t.Helper()
+	restoreStdio(t)
+	savedArgs, savedOpts := os.Args, awgmOpts
+	t.Cleanup(func() {
+		os.Args, awgmOpts, awgmLog = savedArgs, savedOpts, nil
+		// Глобальное состояние обвязки после теста обнуляется целиком: в этом
+		// пакете его наполняет только awgmSetup, и другого владельца у него нет.
+		awgmState.mu.Lock()
+		defer awgmState.mu.Unlock()
+		awgmState.instance, awgmState.configHash, awgmState.binarySHA256 = "", "", ""
+		awgmState.mode, awgmState.lastError = "", ""
+		awgmState.address, awgmState.mtu, awgmState.wgConfig = "", 0, ""
+	})
+}
+
+// restoreStdio запоминает дескрипторы 1 и 2 и возвращает их после теста.
+//
+// Через syscall, а не через golang.org/x/sys/unix: в go_client x/sys — уже
+// косвенная зависимость (единственный прямой импорт снят вместе с
+// -tun-fd-sock), и импорт ради теста вернул бы её в прямые, поменяв go.mod.
+func restoreStdio(t *testing.T) {
+	t.Helper()
+	saved := make(map[int]int, 2)
+	for _, fd := range []int{1, 2} {
+		dup, err := syscall.Dup(fd)
+		if err != nil {
+			t.Fatalf("сохранение дескриптора %d: %v", fd, err)
+		}
+		saved[fd] = dup
+	}
+	t.Cleanup(func() {
+		for fd, dup := range saved {
+			_ = syscall.Dup3(dup, fd, 0)
+			_ = syscall.Close(dup)
+		}
+	})
 }
