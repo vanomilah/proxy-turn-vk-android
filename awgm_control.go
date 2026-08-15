@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,14 +72,30 @@ func awgmSetup() []string {
 
 	awgmproto.IgnoreSIGPIPE()
 
+	// Отказы обвязки на старте копятся, а не затирают друг друга: без журнала
+	// менеджер слепнет целиком, и терять эту причину под отказом отпечатка
+	// нельзя. Других писателей lastError, кроме этих трёх мест, нет.
+	var setupErrs []string
+
 	if opts.LogFile != "" {
 		lg, err := awgmproto.OpenLog(opts.LogFile)
 		if err != nil {
+			// Отказ журнала — тот единственный случай, о котором роль обязана
+			// сказать в last_error (§6.1). Мотив «видимость ошибок несёт журнал»
+			// перестаёт работать ровно тогда, когда журнала нет: сообщение ушло
+			// бы в унаследованный stderr, а менеджер не узнал бы вообще ничего.
+			// Классификатора строк журнала здесь нет и не появляется: это наш
+			// собственный, точно известный отказ нашей же обвязки.
 			log.Printf("[AWGM] журнал %s: %v", opts.LogFile, err)
+			setupErrs = append(setupErrs, "журнал недоступен: "+err.Error())
 		} else {
 			awgmLog = lg
 			if err := awgmproto.RedirectStdio(lg); err != nil {
+				// Слепота та же, а вводит в заблуждение сильнее: файл открыт и
+				// пуст, и менеджер прочитает это как «процессу нечего сказать»,
+				// а не как «мы ничего не видим».
 				log.Printf("[AWGM] вывод в журнал: %v", err)
+				setupErrs = append(setupErrs, "вывод не перенаправлен в журнал: "+err.Error())
 			}
 			go lg.WatchCap(context.Background(), awgmCapPeriod)
 		}
@@ -91,8 +108,9 @@ func awgmSetup() []string {
 	awgmState.mu.Lock()
 	if err != nil {
 		log.Printf("[AWGM] отпечаток бинаря: %v", err)
-		awgmState.lastError = "отпечаток бинаря: " + err.Error()
+		setupErrs = append(setupErrs, "отпечаток бинаря: "+err.Error())
 	}
+	awgmState.lastError = strings.Join(setupErrs, "; ")
 	awgmState.binarySHA256 = sum
 	awgmState.instance = awgmproto.InstanceFromPath(opts.Socket, awgmImpl, awgmRole)
 	// Отпечаток конфигурации считается ОДИН раз при старте и только по
@@ -171,9 +189,9 @@ func (s *awgmServerState) snapshot() awgmproto.State {
 // awgmSetError запоминает последнюю ошибку и будит менеджера.
 //
 // Вызывающего нет — намеренно, см. конец задачи: общей точки печати ошибок у
-// монолита не существует, а классификатор строк журнала мы не заводим. Отказ
-// отпечатка бинаря пишет lastError напрямую, потому что случается внутри уже
-// взятого лока.
+// монолита не существует, а классификатор строк журнала мы не заводим. Отказы
+// самой обвязки (журнал, отпечаток бинаря) пишут lastError прямо в awgmSetup:
+// они случаются раньше, чем поднят слушатель, и пушить их было бы некуда.
 // Из OnError слушателя её звать НЕЛЬЗЯ: OnError зовётся в том числе из Push, и
 // получилась бы рекурсия «push не прошёл → пушим об этом».
 func awgmSetError(message string, fatal bool) {

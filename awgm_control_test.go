@@ -265,22 +265,7 @@ func TestInstanceNamingMatchesManagerSocket(t *testing.T) {
 // Перезапись os.Args — условие того, что flag.Parse форка не увидит awgm-флагов
 // и не завершит процесс кодом 2.
 func TestAwgmSetupReadsArgs(t *testing.T) {
-	savedArgs, savedOpts := os.Args, awgmOpts
-	t.Cleanup(func() {
-		os.Args, awgmOpts, awgmLog = savedArgs, savedOpts, nil
-		// Глобальное состояние обвязки после теста обнуляется целиком: в этом
-		// пакете его наполняет только awgmSetup, и другого владельца у него нет.
-		awgmState.mu.Lock()
-		defer awgmState.mu.Unlock()
-		awgmState.instance, awgmState.configHash, awgmState.binarySHA256 = "", "", ""
-		awgmState.lastError = ""
-		awgmState.dtlsPort, awgmState.directPort, awgmState.rawPort = 0, 0, 0
-	})
-	// RedirectStdio внутри awgmSetup накрывает дескрипторы 1 и 2 САМОГО процесса,
-	// а процесс здесь — тестовый бинарь. Без сохранения и возврата дескрипторов
-	// весь дальнейший вывод прогона уходит в журнал: падение соседнего теста
-	// осталось бы без текста, а причина искалась бы долго.
-	restoreStdio(t)
+	withAwgmGlobals(t)
 
 	logPath := t.TempDir() + "/awgm.log"
 	// -listen намеренно НЕ передан: сервер слушает свой дефолт, и state обязан
@@ -320,6 +305,74 @@ func TestAwgmSetupReadsArgs(t *testing.T) {
 	if st.Listen.Direct != 0 {
 		t.Errorf("listen.direct = %d, ожидали 0 (флаг не передан — транспорт выключен)", st.Listen.Direct)
 	}
+	// Журнал открылся — значит last_error пуст: у этой роли он заполняется
+	// РОВНО отказами самой обвязки и ничем больше (§6.1).
+	if st.LastError != "" {
+		t.Errorf("last_error = %q при исправном старте, ожидали пустую строку", st.LastError)
+	}
+}
+
+// TestAwgmSetupReportsJournalFailure — недоступный журнал обязан доехать до
+// менеджера полем last_error.
+//
+// Это единственный отказ, о котором роль говорит в last_error, и обойтись
+// журналом здесь нельзя по построению: журнала-то и нет. Сообщение уехало бы в
+// унаследованный stderr, а менеджер не узнал бы ни причины, ни факта.
+func TestAwgmSetupReportsJournalFailure(t *testing.T) {
+	withAwgmGlobals(t)
+
+	// Каталога нет — OpenLog отказывает предсказуемо и без прав root.
+	os.Args = []string{"wdtt-server",
+		"--awgm-log-file=" + t.TempDir() + "/нет-каталога/awgm.log",
+		"-listen", "0.0.0.0:56000",
+	}
+	awgmSetup()
+
+	// Через JSON: проверяем, что причина именно ДОЕЗЖАЕТ в state, а не просто
+	// лежит в поле структуры.
+	raw, err := json.Marshal(awgmState.snapshot())
+	if err != nil {
+		t.Fatalf("сериализация state: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("разбор state: %v", err)
+	}
+	msg, _ := got["last_error"].(string)
+	if msg == "" {
+		t.Fatal("last_error пуст при недоступном журнале: менеджер не узнает ни причины, ни факта")
+	}
+	// Префикс короткий и стабильный — его показывают в интерфейсе, и он не
+	// зависит от текста ошибки ядра.
+	const prefix = "журнал недоступен: "
+	if !strings.HasPrefix(msg, prefix) {
+		t.Errorf("last_error = %q, ожидали префикс %q", msg, prefix)
+	}
+	if awgmLog != nil {
+		t.Error("журнал не открылся, а awgmLog выставлен")
+	}
+}
+
+// withAwgmGlobals изолирует тест от глобального состояния обвязки.
+//
+// Сохраняет и возвращает os.Args, awgmOpts и awgmState, а заодно дескрипторы
+// 1 и 2: RedirectStdio внутри awgmSetup накрывает дескрипторы САМОГО процесса,
+// а процесс здесь — тестовый бинарь. Без их возврата весь дальнейший вывод
+// прогона уходит в журнал, и падение соседнего теста остаётся без текста.
+func withAwgmGlobals(t *testing.T) {
+	t.Helper()
+	restoreStdio(t)
+	savedArgs, savedOpts := os.Args, awgmOpts
+	t.Cleanup(func() {
+		os.Args, awgmOpts, awgmLog = savedArgs, savedOpts, nil
+		// Глобальное состояние обвязки после теста обнуляется целиком: в этом
+		// пакете его наполняет только awgmSetup, и другого владельца у него нет.
+		awgmState.mu.Lock()
+		defer awgmState.mu.Unlock()
+		awgmState.instance, awgmState.configHash, awgmState.binarySHA256 = "", "", ""
+		awgmState.lastError = ""
+		awgmState.dtlsPort, awgmState.directPort, awgmState.rawPort = 0, 0, 0
+	})
 }
 
 // restoreStdio запоминает дескрипторы 1 и 2 и возвращает их после теста.
