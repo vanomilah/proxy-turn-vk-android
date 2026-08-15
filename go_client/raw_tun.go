@@ -31,16 +31,50 @@ func newPendingPacketConn() *pendingPacketConn {
 func (p *pendingPacketConn) Attach(pc net.PacketConn) {
 	p.mu.Lock()
 	p.real = pc
+	ready := p.ready
 	p.mu.Unlock()
-	close(p.ready)
+	// Канал закрывается один раз за цикл прикрепления: Detach заводит новый.
+	select {
+	case <-ready:
+	default:
+		close(ready)
+	}
+}
+
+// Detach снимает дескриптор и снова блокирует чтение.
+//
+// Без этого читающий цикл диспетчера после закрытия дескриптора крутился бы на
+// ошибках чтения с паузой в 10 мс (dispatcher.go:164), то есть жёг бы CPU всё
+// время между откреплением и следующим attach-tun.
+func (p *pendingPacketConn) Detach() {
+	p.mu.Lock()
+	p.real = nil
+	p.ready = make(chan struct{})
+	p.mu.Unlock()
 }
 
 func (p *pendingPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	<-p.ready
-	p.mu.Lock()
-	pc := p.real
-	p.mu.Unlock()
-	return pc.ReadFrom(b)
+	for {
+		p.mu.Lock()
+		pc, ready := p.real, p.ready
+		p.mu.Unlock()
+		if pc == nil {
+			<-ready
+			continue
+		}
+		n, a, err := pc.ReadFrom(b)
+		if err != nil {
+			// Ошибка на откреплённом дескрипторе — не ошибка чтения, а наш
+			// собственный detach: ждём следующего прикрепления.
+			p.mu.Lock()
+			detached := p.real != pc
+			p.mu.Unlock()
+			if detached {
+				continue
+			}
+		}
+		return n, a, err
+	}
 }
 
 func (p *pendingPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {

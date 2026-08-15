@@ -6,8 +6,7 @@ import "flag"
 var (
 	compatVkAuthMode  = flag.String("vk-auth-mode", "", "alias для -vk-auth (awg-manager)")
 	compatFingerprint = flag.String("fingerprint", "", "совместимость с awg-manager (игнорируется)")
-	compatTunName     = flag.String("tun-name", "", "kernel TUN (rawtun fallback без -tun-fd-sock)")
-	compatTunFdSock   = flag.String("tun-fd-sock", "", "unix-socket для TUN fd от awg-manager (как APK -tun-fd-sock)")
+	compatTunName     = flag.String("tun-name", "", "kernel TUN для rawtun при ручном запуске (без awg-manager)")
 )
 
 func applyCompatFlags(vkAuth *string, vkAnonPath *string) {

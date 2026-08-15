@@ -14,9 +14,10 @@ require (
 	github.com/pion/turn/v5 v5.0.2
 	golang.org/x/crypto v0.46.0
 	golang.org/x/net v0.48.0
-	golang.org/x/sys v0.39.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 )
+
+require golang.org/x/sys v0.45.0 // indirect
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
@@ -26,6 +27,7 @@ require (
 	github.com/bogdanfinn/utls v1.7.7-barnius // indirect
 	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
 	github.com/google/btree v1.1.2 // indirect
+	github.com/hoaxisr/awg-manager/awgmproto v0.1.0
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect

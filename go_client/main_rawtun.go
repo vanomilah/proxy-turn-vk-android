@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,18 +26,6 @@ func runRawTunClient(
 
 	disp := NewDispatcher(ctx, pending, stats)
 	defer disp.Shutdown()
-
-	useTunFd := tunFdSockPath() != ""
-	var fdReady chan fdAttachResult
-	if useTunFd {
-		fdReady = make(chan fdAttachResult, 1)
-		sock := tunFdSockPath()
-		log.Printf("[RAW] Ожидание TUN fd (%s)...", sock)
-		go func() {
-			f, err := recvTunFD(ctx, sock)
-			fdReady <- fdAttachResult{f: f, err: err}
-		}()
-	}
 
 	rawConfigCh := make(chan string, 1)
 	rawConfigDone := make(chan struct{})
@@ -66,21 +53,12 @@ func runRawTunClient(
 				MTU:      mtu,
 			}
 
-			var tunConn net.PacketConn
-			if useTunFd {
-				var ar fdAttachResult
-				select {
-				case ar = <-fdReady:
-				case <-ctx.Done():
-					return
-				}
-				if ar.err != nil {
-					log.Printf("[RAW] TUN fd: %v", ar.err)
-					return
-				}
-				name := resolvedTunName()
-				tunConn = newFdPacketConn(ar.f, name)
-				log.Printf("[RAW] TUN подключён (%s), plain IP, клиент %s", name, conf.ClientIP)
+			if awgmEnabled() {
+				// Дескриптор приходит командой attach-tun в любой момент —
+				// и раньше RAWCONF, и позже. Слот прикрепит его сам, как
+				// только появятся обе половины.
+				awgmTun.bind(pending)
+				log.Printf("[RAW] ожидание TUN от менеджера, клиент %s", conf.ClientIP)
 			} else {
 				dev, conn, err := startRawTUN(conf)
 				if err != nil {
@@ -88,14 +66,13 @@ func runRawTunClient(
 					return
 				}
 				_ = dev
-				tunConn = conn
+				pending.Attach(conn)
 				log.Printf("[RAW] TUN готов, клиент %s", conf.ClientIP)
 			}
 
-			pending.Attach(tunConn)
 			atomic.StoreInt32(&tunAttached, 1)
 			fmt.Printf("RAWCONF|%s|%s|%d\n", conf.ClientIP, conf.DNS, conf.MTU)
-			log.Printf("[RAW] TUN готов, трафик пошёл ✓")
+			awgmSetAddress(conf.ClientIP, conf.MTU)
 		case <-ctx.Done():
 		}
 	}()
@@ -155,9 +132,4 @@ func runRawTunClient(
 		log.Println("[RAW] RAWCONF/TUN не получены — выход")
 	}
 	log.Println("[КЛИЕНТ] Все raw-воркеры завершены")
-}
-
-type fdAttachResult struct {
-	f   *os.File
-	err error
 }

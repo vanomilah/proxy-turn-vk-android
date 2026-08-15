@@ -107,6 +107,7 @@ func sanitizeHashCheckMessage(message string) string {
 }
 
 func main() {
+	awgmSetup()
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,6 +120,7 @@ func main() {
 		select {
 		case s := <-sig:
 			log.Printf("[КЛИЕНТ] Сигнал %v, завершаю...", s)
+			awgmPushExit(0)
 			cancel()
 		case <-ctx.Done():
 			return
@@ -404,6 +406,7 @@ func main() {
 				fmt.Printf("║ %-44s ║\n", line)
 			}
 			fmt.Println("╚══════════════════════════════════════════════╝")
+			awgmSetWGConfig(finalConf)
 			if err := os.WriteFile("wg-turn.conf", []byte(finalConf+"\n"), 0600); err != nil {
 				log.Printf("[КОНФИГ] Ошибка сохранения: %v", err)
 			} else {
