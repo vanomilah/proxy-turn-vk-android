@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/hoaxisr/awg-manager/awgmproto v0.1.0
+	github.com/hoaxisr/awg-manager/awgmproto v0.1.1
 	github.com/pion/logging v0.2.4 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.45.0

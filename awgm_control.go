@@ -21,8 +21,6 @@ const (
 	awgmRole = "server"
 )
 
-const awgmCapPeriod = 30 * time.Second
-
 // awgmDefaultListen повторяет дефолт флага -listen у форка (server.go).
 // Без него state соврал бы при запуске без -listen: сервер слушает 56000, а
 // поле dtls было бы нулём, то есть «транспорт выключен».
@@ -97,7 +95,7 @@ func awgmSetup() []string {
 				log.Printf("[AWGM] вывод в журнал: %v", err)
 				setupErrs = append(setupErrs, "вывод не перенаправлен в журнал: "+err.Error())
 			}
-			go lg.WatchCap(context.Background(), awgmCapPeriod)
+			go lg.WatchCap(context.Background(), awgmproto.CapPeriod)
 		}
 	}
 
