@@ -1746,8 +1746,12 @@ func setupNftNAT(extIface string) {
 // параметризована только именем интерфейса.
 func setupRawNAT(rawIface string) error {
 	if keeneticNoNAT {
+		// Ничего не ставим — как и WG-путь (setupFullConeNAT выше). При -no-nat
+		// netfilter принадлежит awg-manager: он ставит свои FORWARD/MASQUERADE
+		// и переставляет их после каждой перезаписи таблиц движком ndm. Наши
+		// правила WDTT_MANAGED он не видит и не снимает — они переживали смерть
+		// процесса и копились в FORWARD.
 		log.Println("[RAW-NAT] пропуск (-no-nat)")
-		setupForwardRules(rawIface)
 		return nil
 	}
 	extIface := keeneticNatIface
