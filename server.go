@@ -48,6 +48,12 @@ import (
 
 var wgIfaceName = "wdtt0"
 
+// rawIfaceName переопределяется флагом -raw-iface (по образцу -wg-iface).
+// На Keenetic имя обязано быть opkgtunN: NDMS выводит ТИП интерфейса из его
+// имени, и «wdttraw0» зарегистрировать нельзя — интерфейс останется невидим
+// для роутера (нет NAT/политик/ACL средствами NDMS).
+var rawIfaceName = "wdttraw0"
+
 const (
 	wgServerAddr          = "10.66.66.1"
 	wgServerCIDR          = wgServerAddr + "/16"
@@ -57,9 +63,13 @@ const (
 
 	// Raw-IP роутер (без WireGuard) — отдельный TUN/подсеть/NAT, полностью
 	// параллельно WG-пути. Подсеть намеренно не пересекается с wgServerCIDR.
-	rawIfaceName  = "wdttraw0"
 	rawServerAddr = "10.70.66.1"
 	rawServerCIDR = rawServerAddr + "/16"
+	// rawGatewayAddr — второй адрес на raw-интерфейсе, который вешает NDMS,
+	// когда awg-manager регистрирует его как OpkgTunN (паритет с 10.66.0.1 на
+	// WG-пути). Клиенту он достаться не должен: адрес локальный, обратный
+	// трафик к нему не уйдёт в туннель.
+	rawGatewayAddr = "10.70.0.1"
 	// Raw-режим не несёт WG data header (~32 байта) — только RTP-obfs (12 байт
 	// заголовок + 16 байт AEAD tag + до 60 байт padding в video-режиме) и TURN
 	// ChannelData/Send Indication framing (4-24 байта). Даже в худшем случае
@@ -502,7 +512,7 @@ func getNextRawIP() string {
 	for b3 := 0; b3 <= 255; b3++ {
 		for b4 := 1; b4 <= 254; b4++ {
 			ip := fmt.Sprintf("10.70.%d.%d", b3, b4)
-			if ip == rawServerAddr {
+			if ip == rawServerAddr || ip == rawGatewayAddr {
 				continue
 			}
 			if !used[ip] {
@@ -2580,6 +2590,7 @@ func main() {
 	dnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")
 	flagNoNAT := flag.Bool("no-nat", false, "skip iptables/nft NAT (awg-manager на роутере)")
 	flagWGIface := flag.String("wg-iface", "", "userspace WG iface (opkgtunN для Keenetic)")
+	flagRawIface := flag.String("raw-iface", "", "raw-IP iface (opkgtunN для Keenetic)")
 	flagNatIface := flag.String("nat-if", "", "egress interface for MASQUERADE")
 	flag.Parse()
 	dns = *dnsFlag
@@ -2587,6 +2598,9 @@ func main() {
 	keeneticNatIface = strings.TrimSpace(*flagNatIface)
 	if n := strings.TrimSpace(*flagWGIface); n != "" {
 		wgIfaceName = n
+	}
+	if n := strings.TrimSpace(*flagRawIface); n != "" {
+		rawIfaceName = n
 	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
