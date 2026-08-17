@@ -266,18 +266,9 @@ func zeroBytes(b []byte) {
 	}
 }
 
-func (s *wrapKeyStore) SetPasswords(mainPassword string, generated []string) error {
-	next := make([]wrapKeyEntry, 0, len(generated)+1)
-	seen := make(map[string]struct{}, len(generated)+1)
-
-	if mainPassword != "" {
-		key, err := deriveWrapKey(mainPassword)
-		if err != nil {
-			return err
-		}
-		next = append(next, wrapKeyEntry{id: "main", key: key})
-		seen["main"] = struct{}{}
-	}
+func (s *wrapKeyStore) SetPasswords(generated []string) error {
+	next := make([]wrapKeyEntry, 0, len(generated))
+	seen := make(map[string]struct{}, len(generated))
 
 	for _, password := range generated {
 		if password == "" {
@@ -376,7 +367,7 @@ func refreshWrapKeysFromDBLocked() error {
 			passwords = append(passwords, password)
 		}
 	}
-	return serverWrapKeys.SetPasswords(db.MainPassword, passwords)
+	return serverWrapKeys.SetPasswords(passwords)
 }
 
 func reloadDB(wgDev *device.Device) error {
@@ -467,6 +458,21 @@ func isPasswordExpired(entry *PasswordEntry) bool {
 	return time.Now().Unix() > entry.ExpiresAt
 }
 
+// passwordAccepted отвечает, годится ли пароль для ПОДКЛЮЧЕНИЯ.
+// Главный пароль сюда не входит: он ключ администрирования (X-Admin-Password),
+// а не учётная запись абонента.
+//
+// Запись возвращается ДАЖЕ при отказе, если она нашлась: на неё смотрят ветки
+// отказа, чтобы отличить истёкший пароль от неизвестного.
+// Зовётся под уже взятым dbMutex.
+func passwordAccepted(password string) (*PasswordEntry, bool) {
+	entry, ok := db.Passwords[password]
+	if !ok {
+		return nil, false
+	}
+	return entry, !isPasswordExpired(entry)
+}
+
 func getNextIP() string {
 	used := make(map[string]bool)
 	for _, dev := range db.Devices {
@@ -532,7 +538,6 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 	var waitingForDays bool
 	var waitingForPorts bool
 	var waitingForHash bool
-	var targetPassword string
 
 	var tempDays int
 	var tempMaxDevs int
@@ -735,15 +740,6 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					}
 					dbMutex.Unlock()
 					sendTelegram(token, adminID, fmt.Sprintf("✅ Пароль `%s` активирован", pass), nil)
-
-				} else if data == "mainlink" {
-					targetPassword = "main"
-					var keyboard [][]map[string]interface{}
-					keyboard = append(keyboard, []map[string]interface{}{
-						{"text": "Да", "callback_data": "ports_def"},
-						{"text": "Нет", "callback_data": "ports_custom"},
-					})
-					sendTelegram(token, adminID, "⚙️ Использовать стандартные порты для главного пароля (56000, 56001, 9000)?", map[string]interface{}{"inline_keyboard": keyboard})
 
 				} else if data == "ports_def" {
 					tempPorts = "56000,56001,9000"
@@ -950,34 +946,6 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 				}
 				waitingForHash = false
 
-				if targetPassword == "main" {
-					targetPassword = ""
-					srvIP := getPublicIP()
-					pts := strings.Split(tempPorts, ",")
-					link := fmt.Sprintf("wdtt://%s:%s:%s:%s:%s:%s", srvIP, pts[0], pts[1], pts[2], db.MainPassword, hash)
-
-					nameEsc := neturl.QueryEscape(fmt.Sprintf("qWDTT - Main (%s)", srvIP))
-					peerEsc := neturl.QueryEscape(srvIP)
-					hashesEsc := neturl.QueryEscape(hash)
-					passEsc := neturl.QueryEscape(db.MainPassword)
-					qwdttLink := fmt.Sprintf("qwdtt://config?name=%s&peer=%s&hashes=%s&workers=16&port=9000&pass=%s", nameEsc, peerEsc, hashesEsc, passEsc)
-
-					msgText := fmt.Sprintf("🔗 *Ссылка для главного пароля:*\n`%s`\n\n🔗 *Быстрая ссылка qWDTT:* `%s`", link, qwdttLink)
-					sendTelegram(token, adminID, msgText, nil)
-
-					configJSON := fmt.Sprintf(`{
-  "name": "qWDTT - Main (%s)",
-  "peer": "%s",
-  "vkHashes": "%s",
-  "workersPerHash": 16,
-  "listenPort": 9000,
-  "password": "%s"
-}`, srvIP, srvIP, hash, db.MainPassword)
-					fileName := fmt.Sprintf("qwdtt_main_%s.conf", srvIP)
-					sendTelegramFile(token, adminID, fileName, []byte(configJSON))
-					continue
-				}
-
 				dbMutex.Lock()
 				if cleanupExpiredPasswordsLocked(wgDev) > 0 {
 					saveDB()
@@ -1177,13 +1145,9 @@ func sendPasswordList(token string, adminID int64, wgDev *device.Device) {
 	}
 
 	txt := "🔐 *Пароли:*\n\n"
-	txt += fmt.Sprintf("🔒 Главный: `%s` (владелец)\n\n", db.MainPassword)
+	txt += fmt.Sprintf("🔒 Ключ администрирования: `%s` (не пароль подключения)\n\n", db.MainPassword)
 
 	var inlineKb []map[string]interface{}
-	inlineKb = append(inlineKb, map[string]interface{}{
-		"text":          "🔗 Ссылка на главный пароль",
-		"callback_data": "mainlink",
-	})
 
 	if len(db.Passwords) == 0 {
 		txt += "_Нет сгенерированных паролей._\n"
@@ -2316,32 +2280,28 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter) 
 		// Только этот воркер проверяет пароль и (при необходимости) создаёт
 		// устройство — как и в классическом GETCONF-пути handleConn.
 		dbMutex.Lock()
-		isMainPass := password != "" && password == db.MainPassword
-		entry, isGenPass := db.Passwords[password]
-		valid := isMainPass || (isGenPass && !isPasswordExpired(entry))
+		entry, valid := passwordAccepted(password)
 
-		if valid && isGenPass && entry.IsDeactivated {
+		if valid && entry.IsDeactivated {
 			dbMutex.Unlock()
 			clientConn.Write([]byte("DENIED:deactivated"))
 			return
 		}
-		if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
+		if valid && !entry.canConnectAndBind(deviceID) {
 			dbMutex.Unlock()
 			clientConn.Write([]byte("DENIED:device_mismatch"))
 			return
 		}
 		if !valid {
 			dbMutex.Unlock()
-			if isGenPass && isPasswordExpired(entry) {
+			if entry != nil && isPasswordExpired(entry) {
 				clientConn.Write([]byte("DENIED:expired"))
 			} else {
 				clientConn.Write([]byte("DENIED:wrong_password"))
 			}
 			return
 		}
-		if isGenPass {
-			saveDB()
-		}
+		saveDB()
 
 		dev, exists := db.Devices[deviceID]
 		if !exists {
@@ -2919,16 +2879,14 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 		dbMutex.Lock()
 
 		// Проверяем пароль
-		isMainPass := password != "" && password == db.MainPassword
-		entry, isGenPass := db.Passwords[password]
-		valid := isMainPass || (isGenPass && !isPasswordExpired(entry))
+		entry, valid := passwordAccepted(password)
 
 		// Для сгенерированных паролей — проверяем привязку к устройству
-		if valid && isGenPass && entry.IsDeactivated {
+		if valid && entry.IsDeactivated {
 			clientConn.Write([]byte("DENIED:deactivated"))
 			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
 			dbMutex.Unlock()
-		} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
+		} else if valid && !entry.canConnectAndBind(deviceID) {
 			// Достигнут лимит устройств или привязано к другому устройству
 			clientConn.Write([]byte("DENIED:device_mismatch"))
 			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
@@ -2937,9 +2895,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			connDeviceID = deviceID
 
 			// Сохраняем БД, так как canConnectAndBind мог внести привязку нового устройства
-			if isGenPass {
-				saveDB()
-			}
+			saveDB()
 
 			dev, exists := db.Devices[deviceID]
 			if !exists {
@@ -2975,7 +2931,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			}
 			dbMutex.Unlock()
 		} else {
-			if isGenPass && isPasswordExpired(entry) {
+			if entry != nil && isPasswordExpired(entry) {
 				clientConn.Write([]byte("DENIED:expired"))
 				log.Printf("[WG] Отказ: пароль %s истёк, от %s", maskPassword(password), deviceID)
 			} else {
