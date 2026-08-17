@@ -25,10 +25,6 @@ const (
 	awgmModeWG  = "wg"
 )
 
-// awgmCapPeriod — как часто сверяется потолок журнала. Статистика печатается
-// раз в три секунды, до мегабайта копится часами: чаще незачем.
-const awgmCapPeriod = 30 * time.Second
-
 var (
 	awgmOpts    awgmproto.Options
 	awgmSrv     *awgmproto.Server
@@ -108,7 +104,7 @@ func awgmSetup() []string {
 				log.Printf("[AWGM] вывод в журнал: %v", err)
 				setupErrs = append(setupErrs, "вывод не перенаправлен в журнал: "+err.Error())
 			}
-			go lg.WatchCap(context.Background(), awgmCapPeriod)
+			go lg.WatchCap(context.Background(), awgmproto.CapPeriod)
 		}
 	}
 
