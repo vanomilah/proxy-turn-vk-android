@@ -120,8 +120,8 @@ func TestDownlinkChunkSizeForSteps(t *testing.T) {
 
 // Страж значения потолка воркеров на клиентский IP.
 func TestRawMaxWorkersPerIPValue(t *testing.T) {
-	if rawMaxWorkersPerIP != 64 {
-		t.Fatalf("потолок воркеров = %d, ожидалось 64 (36 штатных + 28 запаса)", rawMaxWorkersPerIP)
+	if rawMaxWorkersPerIP != 48 {
+		t.Fatalf("потолок воркеров = %d, ожидалось 48 (36 штатных + 12 запаса)", rawMaxWorkersPerIP)
 	}
 	// Потолок обязан лежать ВЫШЕ штатного максимума клиента: клиент кратен 9
 	// (9/18/27/36), поэтому 36 — рабочая конфигурация, а не край. Потолок на
