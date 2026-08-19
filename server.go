@@ -2150,8 +2150,7 @@ func (r *rawRouter) downlinkLoop() {
 			continue // короткий пакет или не IPv4 — raw-режим IPv6 не поддерживает, как и WG-путь
 		}
 		dst := net.IP(pkt[16:20]).String()
-		w := r.pickDownlinkConn(dst, len(pkt))
-		if w == nil {
+		if !r.dispatchDownlink(dst, pkt) {
 			if atomic.CompareAndSwapUint32(&r.noSessionLogged, 0, 1) {
 				log.Printf("[RAW] downlink: нет сессии для %s (пакет от интернета, но клиент не зарегистрирован)", dst)
 			}
@@ -2160,22 +2159,40 @@ func (r *rawRouter) downlinkLoop() {
 		if atomic.CompareAndSwapUint32(&r.firstDownlink, 0, 1) {
 			log.Printf("[RAW] Первый downlink-пакет доставлен клиенту %s (%d байт)", dst, len(pkt))
 		}
-		// Копируем в pooled-буфер: pkt живёт в общем buf, который readLoop
-		// тут же перезапишет следующим Read — writer-горутина воркера должна
-		// получить свою независимую копию, раз запись теперь асинхронная.
-		out := getBuf2048()[:len(pkt)]
-		copy(out, pkt)
-		w.enqueue(out)
 	}
 }
 
-// pickDownlinkConn выбирает воркера для очередного downlink-пакета клиента
-// dst, размазывая нагрузку по всем его зарегистрированным воркерам
-// адаптивными чанками (см. downlinkChunkSizeFor) с предохранителем
-// downlinkMaxDwellMS на случай, если текущий relay начал тормозить.
-func (r *rawRouter) pickDownlinkConn(dst string, pktSize int) *downlinkWorker {
+// dispatchDownlink выбирает воркера для пакета клиента dst и кладёт копию
+// пакета в его очередь, НЕ отпуская r.mu между выбором и отправкой. Раньше
+// это были два шага (pickDownlinkConn + enqueue) с отпущенным локом между
+// ними, и в это окно unregister успевал снять воркера и закрыть его sendCh —
+// отправка в закрытый канал роняла паникой весь сервер. Под общим локом
+// close уже не может опередить отправку: unregister закрывает канал только
+// после того, как снял воркера под r.mu, то есть после завершения любой
+// отправки, начатой до снятия.
+// Возвращает false, если сессии для dst нет.
+func (r *rawRouter) dispatchDownlink(dst string, pkt []byte) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	w := r.pickDownlinkConnLocked(dst, len(pkt))
+	if w == nil {
+		return false
+	}
+	// Копируем в pooled-буфер: pkt живёт в общем buf, который downlinkLoop
+	// тут же перезапишет следующим Read — writer-горутина воркера должна
+	// получить свою независимую копию, раз запись теперь асинхронная.
+	out := getBuf2048()[:len(pkt)]
+	copy(out, pkt)
+	w.enqueue(out)
+	return true
+}
+
+// pickDownlinkConnLocked выбирает воркера для очередного downlink-пакета
+// клиента dst, размазывая нагрузку по всем его зарегистрированным воркерам
+// адаптивными чанками (см. downlinkChunkSizeFor) с предохранителем
+// downlinkMaxDwellMS на случай, если текущий relay начал тормозить.
+// Вызывается с уже взятым r.mu.
+func (r *rawRouter) pickDownlinkConnLocked(dst string, pktSize int) *downlinkWorker {
 	cs := r.sessions[dst]
 	if cs == nil || len(cs.workers) == 0 {
 		return nil
@@ -2236,7 +2253,9 @@ func (r *rawRouter) unregister(ip string, w *downlinkWorker) {
 	r.mu.Unlock()
 	// stop() вне r.mu — ждёт завершения writer-горутины (после close(sendCh)
 	// она дожигает уже поставленные в очередь пакеты), не держим лок роутера
-	// на время этого ожидания.
+	// на время этого ожидания. Гонки с отправкой это не создаёт: воркер уже
+	// снят из cs.workers под r.mu, поэтому dispatchDownlink его больше не
+	// выберет, а отправка, начатая до снятия, завершилась до Unlock выше.
 	w.stop()
 }
 
