@@ -1984,7 +1984,10 @@ const downlinkWorkerBuf = 256
 
 // rawDownlinkRate ограничивает одну TURN-аллокацию немного ниже наблюдаемого
 // VK лимита ~260 KiB/s. Пейсер сглаживает bursts, не меняя протокол клиента.
-const (
+// Настраиваются флагами -raw-downlink-rate/-raw-downlink-burst: ноль отключает
+// пейсер (newPacer возвращает nil), и тогда потери переезжают из нашей очереди
+// в шейпер VK — вне наших счётчиков.
+var (
 	rawDownlinkRate  = 247 * 1024
 	rawDownlinkBurst = 16 * 1024
 )
@@ -2615,6 +2618,8 @@ func main() {
 	flagWGIface := flag.String("wg-iface", "", "userspace WG iface (opkgtunN для Keenetic)")
 	flagRawIface := flag.String("raw-iface", "", "raw-IP iface (opkgtunN для Keenetic)")
 	flagNatIface := flag.String("nat-if", "", "egress interface for MASQUERADE")
+	flag.IntVar(&rawDownlinkRate, "raw-downlink-rate", rawDownlinkRate, "лимит downlink на одну raw-аллокацию, байт/с (0 = без пейсера)")
+	flag.IntVar(&rawDownlinkBurst, "raw-downlink-burst", rawDownlinkBurst, "burst пейсера downlink, байт (0 = без пейсера)")
 	flag.Parse()
 	dns = *dnsFlag
 	keeneticNoNAT = *flagNoNAT

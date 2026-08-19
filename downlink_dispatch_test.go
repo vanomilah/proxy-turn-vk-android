@@ -64,3 +64,20 @@ func TestDispatchDownlinkVsUnregisterChurn(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// Пейсер отключается нулём — на этом держится смысл флагов
+// -raw-downlink-rate/-raw-downlink-burst.
+func TestNewPacerZeroDisables(t *testing.T) {
+	if newPacer(0, rawDownlinkBurst) != nil {
+		t.Fatal("rate=0 должен выключать пейсер")
+	}
+	if newPacer(rawDownlinkRate, 0) != nil {
+		t.Fatal("burst=0 должен выключать пейсер")
+	}
+	if newPacer(rawDownlinkRate, rawDownlinkBurst) == nil {
+		t.Fatal("дефолтные значения должны включать пейсер")
+	}
+	if err := (*pacer)(nil).await(t.Context(), 1500); err != nil {
+		t.Fatalf("await на nil-пейсере: %v", err)
+	}
+}
