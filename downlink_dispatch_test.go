@@ -117,3 +117,60 @@ func TestDownlinkChunkSizeForSteps(t *testing.T) {
 		}
 	}
 }
+
+// Страж значения потолка воркеров на клиентский IP.
+func TestRawMaxWorkersPerIPValue(t *testing.T) {
+	if rawMaxWorkersPerIP != 64 {
+		t.Fatalf("потолок воркеров = %d, ожидалось 64 (36 штатных + 28 запаса)", rawMaxWorkersPerIP)
+	}
+	// Потолок обязан лежать ВЫШЕ штатного максимума клиента: клиент кратен 9
+	// (9/18/27/36), поэтому 36 — рабочая конфигурация, а не край. Потолок на
+	// уровне 36 или ниже упирался бы в неё циклом переподключений.
+	const clientMaxWorkers = 36
+	if rawMaxWorkersPerIP <= clientMaxWorkers {
+		t.Fatalf("потолок %d не выше штатного максимума клиента %d", rawMaxWorkersPerIP, clientMaxWorkers)
+	}
+}
+
+// Страж формы отказа: сверх потолка register возвращает nil (вызывающий
+// закрывает соединение и логирует), а не паникует, не вытесняет живое реле
+// и не роняет пакеты молча. Освободившийся слот снова принимает — потолок
+// не залипает после отключения клиента.
+func TestRegisterRejectsAboveWorkerCap(t *testing.T) {
+	r := &rawRouter{sessions: make(map[string]*rawClientSessions)}
+	const ip = "10.10.0.3"
+
+	workers := make([]*downlinkWorker, 0, rawMaxWorkersPerIP)
+	defer func() {
+		for _, w := range workers {
+			r.unregister(ip, w)
+		}
+	}()
+
+	for i := 0; i < rawMaxWorkersPerIP; i++ {
+		w := r.register(ip, nopConn{}, "dev")
+		if w == nil {
+			t.Fatalf("register #%d отвергнут ниже потолка %d", i+1, rawMaxWorkersPerIP)
+		}
+		workers = append(workers, w)
+	}
+
+	if w := r.register(ip, nopConn{}, "dev"); w != nil {
+		r.unregister(ip, w)
+		t.Fatalf("register сверх потолка %d вернул воркера, ожидался nil", rawMaxWorkersPerIP)
+	}
+	r.mu.Lock()
+	n := len(r.sessions[ip].workers)
+	r.mu.Unlock()
+	if n != rawMaxWorkersPerIP {
+		t.Fatalf("после отказа зарегистрировано %d воркеров, ожидалось %d", n, rawMaxWorkersPerIP)
+	}
+
+	r.unregister(ip, workers[0])
+	workers = workers[1:]
+	w := r.register(ip, nopConn{}, "dev")
+	if w == nil {
+		t.Fatal("после освобождения слота register всё ещё отвергает")
+	}
+	workers = append(workers, w)
+}

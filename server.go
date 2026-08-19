@@ -1990,6 +1990,27 @@ func downlinkChunkSizeFor(pktSize int) int {
 // раздаёт пакеты быстрее, чем один relay успевает их вытолкнуть в сеть.
 const downlinkWorkerBuf = 256
 
+// rawMaxWorkersPerIP — потолок числа downlink-воркеров (TURN-реле) на один
+// клиентский IP. Это ПРЕДОХРАНИТЕЛЬ ОТ РАЗРАСТАНИЯ ПАМЯТИ, а не тюнинг
+// производительности: каждый воркер держит очередь downlinkWorkerBuf (256)
+// буферов по 2048 Б, то есть 512 КиБ в полёте, и раньше register() принимал
+// их без всякого ограничения.
+//
+// 64 = 36 штатных + 28 запаса. 36 — штатный максимум клиента (число воркеров
+// кратно 9: 9/18/27/36), запас нужен на слоты мёртвых сессий, которые ещё не
+// сняты по idleTimeout (90 с, см. handleConnRaw) при переподключении. Потолок
+// обязан лежать выше рабочей конфигурации, иначе он сам станет причиной
+// цикла переподключений.
+//
+// По эмпирической модели RSS = 15 + 2.2 × (N × 512 КиБ) МиБ (подтверждена
+// двумя замерами на MT7621 с ошибкой < 5%) 64 воркера дают ≈ 85 МиБ при
+// 136 МиБ доступных: до линии OOM (N≈110) запас вдвое, до линии вытеснения
+// page cache (N≈68) — впритык.
+//
+// Значение одно на все архитектуры: при buf 256 различие по арке ничем не
+// обосновано — на mips предел безопасен по той же модели.
+const rawMaxWorkersPerIP = 64
+
 // rawDownlinkRate ограничивает одну TURN-аллокацию немного ниже наблюдаемого
 // VK лимита ~260 KiB/s. Пейсер сглаживает bursts, не меняя протокол клиента.
 // Настраиваются флагами -raw-downlink-rate/-raw-downlink-burst: ноль отключает
@@ -2232,13 +2253,20 @@ func (r *rawRouter) pickDownlinkConnLocked(dst string, pktSize int) *downlinkWor
 }
 
 func (r *rawRouter) register(ip string, conn net.Conn, deviceID string) *downlinkWorker {
-	w := newDownlinkWorker(conn, deviceID)
 	r.mu.Lock()
 	cs := r.sessions[ip]
 	if cs == nil {
 		cs = &rawClientSessions{}
 		r.sessions[ip] = cs
 	}
+	// Сверх потолка воркера не создаём вовсе и возвращаем nil: вызывающий
+	// закроет соединение и напишет в журнал. Вытеснять старейшего (как делал
+	// legacy-патч) нельзя — это рвёт живое реле работающего клиента.
+	if len(cs.workers) >= rawMaxWorkersPerIP {
+		r.mu.Unlock()
+		return nil
+	}
+	w := newDownlinkWorker(conn, deviceID)
 	cs.workers = append(cs.workers, w)
 	r.mu.Unlock()
 	return w
@@ -2389,6 +2417,10 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter) 
 	}
 
 	dlWorker := router.register(assignedIP, clientConn, deviceID)
+	if dlWorker == nil {
+		log.Printf("[RAW] Отказ %s (ip=%s): достигнут потолок воркеров на клиента (%d)", deviceID, assignedIP, rawMaxWorkersPerIP)
+		return
+	}
 	defer router.unregister(assignedIP, dlWorker)
 	log.Printf("[RAW] Сессия %s зарегистрирована (ip=%s, getConf=%v)", deviceID, assignedIP, isGetConf)
 	defer log.Printf("[RAW] Сессия %s (ip=%s) завершена", deviceID, assignedIP)
