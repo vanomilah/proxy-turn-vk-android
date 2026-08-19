@@ -68,7 +68,6 @@ func WorkerGroupRaw(
 
 	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d raw-воркеров", groupID, creds.TurnURLs, len(workerIDs))
 
-	var configRequestInFlight int32
 	var wg sync.WaitGroup
 	var credsMu sync.RWMutex
 	var refreshMu sync.Mutex
@@ -133,12 +132,11 @@ func WorkerGroupRaw(
 					return
 				}
 
-				getConf := false
-				if shouldGetConfig && atomic.LoadInt32(&configSent) == 0 {
-					getConf = atomic.CompareAndSwapInt32(&configRequestInFlight, 0, 1)
-				}
+				// Все воркеры первой группы шлют GETCONF_RAW, остальные — AUTH.
+				// Канал конфига отдаём только пока он не доставлен.
+				getConf := shouldGetConfig
 				var cc chan<- string
-				if getConf {
+				if getConf && atomic.LoadInt32(&configSent) == 0 {
 					cc = configCh
 				}
 
@@ -151,12 +149,8 @@ func WorkerGroupRaw(
 					getConf, cc, wid, &credsSnapshot, deviceID, password, stats)
 
 				quotaRetry := false
-				if getConf {
-					if configDelivered {
-						atomic.StoreInt32(&configSent, 1)
-					} else {
-						atomic.StoreInt32(&configRequestInFlight, 0)
-					}
+				if getConf && configDelivered {
+					atomic.StoreInt32(&configSent, 1)
 				}
 
 				if sessErr != nil {

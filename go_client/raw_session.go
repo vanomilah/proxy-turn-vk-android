@@ -131,6 +131,7 @@ func RunRawSession(
 	log.Printf("[RAW #%d] Relay: %s", sessionID, relay.LocalAddr())
 
 	pipeA, pipeB := connutil.AsyncPacketPipe()
+	plainConn := &pipeConn{pc: pipeB, peer: peer}
 	// relay ↔ pipeA (как в RunSession); plaintext/GETCONF ↔ pipeB (как DTLS в RunSession).
 
 	sessCtx, sessCancel := context.WithCancel(ctx)
@@ -140,7 +141,7 @@ func RunRawSession(
 	sessionWg.Add(1)
 	go func() {
 		defer sessionWg.Done()
-		t := time.NewTicker(10 * time.Second)
+		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
 		for {
 			select {
@@ -148,6 +149,9 @@ func RunRawSession(
 				return
 			case <-t.C:
 				tc.SendBindingRequest()
+				// Сервер отбрасывает пакеты с первым байтом keepaliveByte
+				// (handleConnRaw), поэтому канал держится живым без вреда трафику.
+				_, _ = plainConn.Write([]byte{keepaliveByte})
 			}
 		}
 	}()
@@ -231,8 +235,6 @@ func RunRawSession(
 		}
 	}()
 
-	plainConn := &pipeConn{pc: pipeB, peer: peer}
-
 	stats.ActiveConnections.Add(1)
 	defer stats.ActiveConnections.Add(-1)
 
@@ -261,7 +263,13 @@ func RunRawSession(
 			}
 		}
 	} else {
-		log.Printf("[RAW #%d] Relay готов (без GETCONF)", sessionID)
+		// Без AUTH сервер (handleConnRaw) отвергает первый сырой IP-пакет и
+		// закрывает соединение — из группы выживал только воркер с GETCONF_RAW.
+		if err := SendAuth(plainConn, deviceID, password); err != nil {
+			log.Printf("[RAW #%d] Ошибка AUTH: %v", sessionID, err)
+			return false, err
+		}
+		log.Printf("[RAW #%d] Relay готов (AUTH отправлен)", sessionID)
 	}
 
 	log.Printf("[RAW #%d] [READY] Raw-туннель готов ✓", sessionID)
@@ -324,6 +332,9 @@ func RunRawSession(
 				return
 			}
 			if n <= 0 {
+				continue
+			}
+			if b[0] == keepaliveByte {
 				continue
 			}
 			if atomic.CompareAndSwapUint32(&firstPeerRead, 0, 1) {
