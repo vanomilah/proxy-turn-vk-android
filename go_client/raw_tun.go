@@ -18,18 +18,38 @@ const defaultRawTunName = "wdtturn0"
 const tunVirtioHdrLen = 10
 
 // pendingPacketConn блокирует ReadFrom до Attach (TUN после RAWCONF).
+//
+// closed — вторая точка выхода из ожидания: RAWCONF может не прийти вовсе
+// (сервер недоступен, DENIED, просроченный пароль), и тогда единственный способ
+// снять читателя — закрытие. Без него Close на неприкреплённом слоте не будил
+// никого, а Dispatcher.Shutdown ждал такого читателя вечно.
 type pendingPacketConn struct {
-	mu    sync.Mutex
-	real  net.PacketConn
-	ready chan struct{}
+	mu     sync.Mutex
+	real   net.PacketConn
+	ready  chan struct{}
+	closed chan struct{}
+	once   sync.Once
 }
 
 func newPendingPacketConn() *pendingPacketConn {
-	return &pendingPacketConn{ready: make(chan struct{})}
+	return &pendingPacketConn{ready: make(chan struct{}), closed: make(chan struct{})}
 }
 
+// Attach прикрепляет дескриптор. После Close — no-op: закрытый слот не
+// воскрешает дескриптор, пришедший в гонке с остановкой. Сам дескриптор при
+// этом не закрывается — им владеет вызывающий (awgmTunSlot закрывает fd в
+// detach), а закрытие чужого fd здесь означало бы двойной close.
 func (p *pendingPacketConn) Attach(pc net.PacketConn) {
 	p.mu.Lock()
+	// Проверка под тем же замком, что и в Close: иначе Attach, разошедшийся с
+	// Close, сохранил бы живой дескриптор уже после закрытия и снова подвесил
+	// читателя на pc.ReadFrom.
+	select {
+	case <-p.closed:
+		p.mu.Unlock()
+		return
+	default:
+	}
 	p.real = pc
 	ready := p.ready
 	p.mu.Unlock()
@@ -59,11 +79,21 @@ func (p *pendingPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 		pc, ready := p.real, p.ready
 		p.mu.Unlock()
 		if pc == nil {
-			<-ready
+			select {
+			case <-ready:
+			case <-p.closed:
+				return 0, nil, net.ErrClosed
+			}
 			continue
 		}
 		n, a, err := pc.ReadFrom(b)
 		if err != nil {
+			// Закрытие слота важнее detach: после Close ждать нечего.
+			select {
+			case <-p.closed:
+				return 0, nil, net.ErrClosed
+			default:
+			}
 			// Ошибка на откреплённом дескрипторе — не ошибка чтения, а наш
 			// собственный detach: ждём следующего прикрепления.
 			p.mu.Lock()
@@ -78,6 +108,11 @@ func (p *pendingPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 }
 
 func (p *pendingPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	select {
+	case <-p.closed:
+		return 0, net.ErrClosed
+	default:
+	}
 	p.mu.Lock()
 	pc := p.real
 	p.mu.Unlock()
@@ -87,14 +122,21 @@ func (p *pendingPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return pc.WriteTo(b, addr)
 }
 
+// Close снимает ожидающих ReadFrom с net.ErrClosed (контракт net.PacketConn) и
+// закрывает прикреплённый дескриптор, если он есть. Идемпотентен: слот закрывают
+// и по отмене контекста, и на уборке.
 func (p *pendingPacketConn) Close() error {
-	p.mu.Lock()
-	pc := p.real
-	p.mu.Unlock()
-	if pc != nil {
-		return pc.Close()
-	}
-	return nil
+	var err error
+	p.once.Do(func() {
+		p.mu.Lock()
+		pc := p.real
+		close(p.closed)
+		p.mu.Unlock()
+		if pc != nil {
+			err = pc.Close()
+		}
+	})
+	return err
 }
 
 func (p *pendingPacketConn) LocalAddr() net.Addr { return &net.IPAddr{IP: net.IPv4(127, 0, 0, 1)} }
