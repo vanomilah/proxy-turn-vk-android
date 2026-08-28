@@ -524,3 +524,36 @@ func TestAwgmTunSlotTimesOut(t *testing.T) {
 		t.Fatalf("дескриптор взялся из ниоткуда: %v", f)
 	}
 }
+
+// Менеджер держит по ресурсу на интерфейс и ищет свой в списке: без Tuns
+// второй ресурс читал бы состояние первого и гонял attach по кругу.
+func TestAwgmTunStatesListsBothHalves(t *testing.T) {
+	slots := &awgmTunSlots{
+		files:   make(map[string]*os.File),
+		waiters: make(map[string]chan struct{}),
+	}
+	if got := slots.states(); got != nil {
+		t.Fatalf("до attach список не пуст: %v", got)
+	}
+
+	r0, w0, _ := os.Pipe()
+	defer r0.Close()
+	defer w0.Close()
+	r1, w1, _ := os.Pipe()
+	defer r1.Close()
+	defer w1.Close()
+	_ = slots.attach("opkgtun1", r1)
+	_ = slots.attach("opkgtun0", r0)
+
+	got := slots.states()
+	if len(got) != 2 {
+		t.Fatalf("половин в списке: %v", got)
+	}
+	// Порядок устойчив — иначе отпечаток наблюдения дрожал бы на ровном месте.
+	if got[0].Iface != "opkgtun0" || got[1].Iface != "opkgtun1" {
+		t.Fatalf("порядок: %v", got)
+	}
+	if !got[0].Attached || !got[1].Attached {
+		t.Fatalf("прикреплённые половины не помечены: %v", got)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,6 +186,10 @@ func (s *awgmServerState) snapshot() awgmproto.State {
 			DTLS: s.dtlsPort, Direct: s.directPort, Raw: s.rawPort,
 		},
 		Clients: &clients,
+		// Половин две, поэтому Tuns, а не Tun: менеджер держит по ресурсу на
+		// интерфейс и ищет в списке свой. Пустой список = ни одного
+		// дескриптора, законное состояние до первого attach-tun.
+		Tuns: awgmTun.states(),
 	}
 }
 
@@ -292,6 +297,21 @@ func (s *awgmTunSlots) detachAll() {
 		}
 		awgmPush(awgmproto.Event{Event: awgmproto.EventTun, Iface: iface, Attached: &no})
 	}
+}
+
+// states — что рассказать менеджеру о прикреплённых дескрипторах.
+func (s *awgmTunSlots) states() []awgmproto.TunState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.files) == 0 {
+		return nil
+	}
+	out := make([]awgmproto.TunState, 0, len(s.files))
+	for iface := range s.files {
+		out = append(out, awgmproto.TunState{Iface: iface, Attached: true})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Iface < out[j].Iface })
+	return out
 }
 
 // awgmTakeTun забирает дескриптор интерфейса, дожидаясь его прихода.
