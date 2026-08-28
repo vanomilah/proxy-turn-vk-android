@@ -525,6 +525,34 @@ func TestAwgmTunSlotTimesOut(t *testing.T) {
 	}
 }
 
+// Ожидаемая, но ещё не прикреплённая половина обязана быть в state: пока
+// сервер молчал о ней, ресурс менеджера не мог наблюдать состояние и не делал
+// attach — обе стороны ждали друг друга.
+func TestAwgmTunStatesIncludesExpected(t *testing.T) {
+	slots := &awgmTunSlots{
+		expected: []string{"opkgtun0", "opkgtun1"},
+		files:    make(map[string]*os.File),
+		waiters:  make(map[string]chan struct{}),
+	}
+	got := slots.states()
+	if len(got) != 2 {
+		t.Fatalf("ожидаемые половины не попали в state: %v", got)
+	}
+	if got[0].Attached || got[1].Attached {
+		t.Fatalf("непришедший дескриптор помечен прикреплённым: %v", got)
+	}
+
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	_ = slots.attach("opkgtun0", r)
+
+	got = slots.states()
+	if len(got) != 2 || !got[0].Attached || got[1].Attached {
+		t.Fatalf("после attach: %v", got)
+	}
+}
+
 // Менеджер держит по ресурсу на интерфейс и ищет свой в списке: без Tuns
 // второй ресурс читал бы состояние первого и гонял attach по кругу.
 func TestAwgmTunStatesListsBothHalves(t *testing.T) {

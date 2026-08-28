@@ -2718,6 +2718,12 @@ func main() {
 	if n := strings.TrimSpace(*flagRawIface); n != "" {
 		rawIfaceName = n
 	}
+	// Половины объявляются менеджеру ДО старта: он держит по ресурсу на
+	// интерфейс и без объявления не знает, что дескриптор вообще ждут.
+	awgmExpectTun(wgIfaceName)
+	if strings.TrimSpace(*listenRaw) != "" {
+		awgmExpectTun(rawIfaceName)
+	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Println("══════════════════════════════════════════")
@@ -2776,7 +2782,12 @@ func main() {
 	syncPersistedPeersToWG(wgDev)
 	defer func() {
 		wgDev.Close()
-		runCmdSilent("ip", "link", "del", wgIfaceName)
+		// Под менеджером интерфейс НЕ наш: его создал NDMS, и снос оставил бы
+		// запись сиротой — роутер писал бы «no such device» каждые 30 секунд.
+		// Своё устройство (ручной запуск) убираем за собой, как и раньше.
+		if !awgmEnabled() {
+			runCmdSilent("ip", "link", "del", wgIfaceName)
+		}
 	}()
 
 	go statsLoop(ctx, *configDir)

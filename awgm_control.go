@@ -249,8 +249,11 @@ func (awgmHandler) DetachTun() error {
 // после hello, то есть уже на работающем сокете, а половины поднимаются на
 // старте — поэтому старт ЖДЁТ своего дескриптора (awgmTakeTun).
 type awgmTunSlots struct {
-	mu    sync.Mutex
-	files map[string]*os.File
+	mu sync.Mutex
+	// expected — половины, дескрипторы которых сервер ждёт: они попадают в
+	// state с attached=false, чтобы менеджеру было что наблюдать.
+	expected []string
+	files    map[string]*os.File
 	// waiters — по одному на ожидающий интерфейс: attach будит того, кто ждёт.
 	waiters map[string]chan struct{}
 }
@@ -299,16 +302,40 @@ func (s *awgmTunSlots) detachAll() {
 	}
 }
 
-// states — что рассказать менеджеру о прикреплённых дескрипторах.
+// awgmExpectTun объявляет половину, дескриптор которой сервер ждёт от
+// менеджера. Зовётся при разборе флагов, до старта половин.
+func awgmExpectTun(iface string) {
+	iface = strings.TrimSpace(iface)
+	if iface == "" || !awgmEnabled() {
+		return
+	}
+	awgmTun.mu.Lock()
+	awgmTun.expected = append(awgmTun.expected, iface)
+	awgmTun.mu.Unlock()
+}
+
+// states — что рассказать менеджеру о дескрипторах.
+//
+// Список включает ОЖИДАЕМЫЕ половины с attached=false, а не только уже
+// прикреплённые: пока сервер молчал о них вовсе, ресурс менеджера не мог
+// наблюдать состояние и не выполнял attach — обе стороны ждали друг друга,
+// и половины поднимались по таймауту своим устройством (стенд 2026-08-28).
 func (s *awgmTunSlots) states() []awgmproto.TunState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.files) == 0 {
+	names := make(map[string]bool, len(s.expected)+len(s.files))
+	for _, iface := range s.expected {
+		names[iface] = false
+	}
+	for iface := range s.files {
+		names[iface] = true
+	}
+	if len(names) == 0 {
 		return nil
 	}
-	out := make([]awgmproto.TunState, 0, len(s.files))
-	for iface := range s.files {
-		out = append(out, awgmproto.TunState{Iface: iface, Attached: true})
+	out := make([]awgmproto.TunState, 0, len(names))
+	for iface, attached := range names {
+		out = append(out, awgmproto.TunState{Iface: iface, Attached: attached})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Iface < out[j].Iface })
 	return out
