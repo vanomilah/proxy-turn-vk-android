@@ -58,10 +58,14 @@ func awgmSetup() []string {
 	awgmOpts = opts
 
 	if opts.Protocol {
-		// attach-tun/detach-tun сервер не поддерживает (матрица ролей §6):
-		// в commands их нет, и менеджер, собравшийся их звать, откажет на гейте.
+		// attach-tun/detach-tun сервер поддерживает с этой версии: обе половины
+		// (WireGuard и raw) работают на TUN, который создал и настроил NDMS, а
+		// не на своём. Раньше сервер сносил чужой интерфейс `ip link del` и
+		// поднимал одноимённый свой — после его выхода запись NDMS оставалась
+		// без устройства, и роутер каждые 30 секунд писал «no such device».
 		if err := awgmproto.PrintProtocol(os.Stdout, awgmproto.ProtocolInfo{
-			Impl: awgmImpl, Role: awgmRole, Commands: []string{awgmproto.CmdState},
+			Impl: awgmImpl, Role: awgmRole,
+			Commands: []string{awgmproto.CmdState, awgmproto.CmdAttachTun, awgmproto.CmdDetachTun},
 		}); err != nil {
 			os.Exit(1)
 		}
@@ -219,9 +223,117 @@ func awgmPush(ev awgmproto.Event) {
 	}
 }
 
-// awgmHandler — команды протокола для сервера. TUN у него нет.
+// awgmHandler — команды протокола для сервера.
 type awgmHandler struct{}
 
-func (awgmHandler) State() awgmproto.State           { return awgmState.snapshot() }
-func (awgmHandler) AttachTun(string, *os.File) error { return awgmproto.ErrNotSupported }
-func (awgmHandler) DetachTun() error                 { return awgmproto.ErrNotSupported }
+func (awgmHandler) State() awgmproto.State { return awgmState.snapshot() }
+
+func (awgmHandler) AttachTun(iface string, f *os.File) error {
+	return awgmTun.attach(iface, f)
+}
+
+func (awgmHandler) DetachTun() error {
+	awgmTun.detachAll()
+	return nil
+}
+
+// awgmTunSlots — дескрипторы TUN, переданные менеджером.
+//
+// У сервера их ДВА: WireGuard-половина и raw-половина, поэтому слоты именованы
+// интерфейсом, а не единственным полем как у клиента. Дескриптор приходит
+// после hello, то есть уже на работающем сокете, а половины поднимаются на
+// старте — поэтому старт ЖДЁТ своего дескриптора (awgmTakeTun).
+type awgmTunSlots struct {
+	mu    sync.Mutex
+	files map[string]*os.File
+	// waiters — по одному на ожидающий интерфейс: attach будит того, кто ждёт.
+	waiters map[string]chan struct{}
+}
+
+var awgmTun = &awgmTunSlots{
+	files:   make(map[string]*os.File),
+	waiters: make(map[string]chan struct{}),
+}
+
+func (s *awgmTunSlots) attach(iface string, f *os.File) error {
+	iface = strings.TrimSpace(iface)
+	if iface == "" {
+		return awgmproto.Errf(awgmproto.CodeBadRequest, "attach-tun без имени интерфейса")
+	}
+	s.mu.Lock()
+	if _, busy := s.files[iface]; busy {
+		s.mu.Unlock()
+		// Молча подменять дескриптор нельзя: сервер уже читает из старого.
+		return awgmproto.Errf(awgmproto.CodeBusy, "дескриптор %s уже прикреплён", iface)
+	}
+	s.files[iface] = f
+	w := s.waiters[iface]
+	delete(s.waiters, iface)
+	s.mu.Unlock()
+	if w != nil {
+		close(w)
+	}
+	yes := true
+	awgmPush(awgmproto.Event{Event: awgmproto.EventTun, Iface: iface, Attached: &yes})
+	return nil
+}
+
+// detachAll отпускает все дескрипторы: команда протокола адресует процесс
+// целиком, а не отдельный интерфейс.
+func (s *awgmTunSlots) detachAll() {
+	s.mu.Lock()
+	files := s.files
+	s.files = make(map[string]*os.File)
+	s.mu.Unlock()
+	no := false
+	for iface, f := range files {
+		if f != nil {
+			_ = f.Close()
+		}
+		awgmPush(awgmproto.Event{Event: awgmproto.EventTun, Iface: iface, Attached: &no})
+	}
+}
+
+// awgmTakeTun забирает дескриптор интерфейса, дожидаясь его прихода.
+//
+// Ждём, потому что порядок задаёт менеджер: он поднимает интерфейс в NDMS,
+// стартует процесс и только потом передаёт дескриптор. Без ожидания сервер
+// падал бы на старте гонкой с собственным менеджером. Возврат nil означает
+// «под менеджером не работаем или не дождались» — вызывающий сам решает,
+// поднимать ли половину по-старому.
+func awgmTakeTun(iface string, wait time.Duration) *os.File {
+	if !awgmEnabled() {
+		return nil
+	}
+	return awgmTun.take(iface, wait)
+}
+
+func (s *awgmTunSlots) take(iface string, wait time.Duration) *os.File {
+	s.mu.Lock()
+	if f, ok := s.files[iface]; ok {
+		s.mu.Unlock()
+		return f
+	}
+	w, ok := s.waiters[iface]
+	if !ok {
+		w = make(chan struct{})
+		s.waiters[iface] = w
+	}
+	s.mu.Unlock()
+
+	select {
+	case <-w:
+	case <-time.After(wait):
+		s.mu.Lock()
+		delete(s.waiters, iface)
+		s.mu.Unlock()
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.files[iface]
+}
+
+// awgmEnabled — работаем ли под менеджером.
+func awgmEnabled() bool { return awgmOpts.Socket != "" }

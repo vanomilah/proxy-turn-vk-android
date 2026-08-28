@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/awgmproto"
 	"golang.org/x/sys/unix"
@@ -455,5 +456,71 @@ func TestAwgmPortOf(t *testing.T) {
 		if got := awgmPortOf(addr); got != want {
 			t.Errorf("awgmPortOf(%q) = %d, ожидали %d", addr, got, want)
 		}
+	}
+}
+
+// Дескриптор ждут ОБЕ половины сервера, и приходит он после старта процесса:
+// менеджер шлёт attach-tun уже на работающем сокете. Без ожидания старт
+// проигрывал бы гонку собственному менеджеру.
+func TestAwgmTunSlotWaitsForAttach(t *testing.T) {
+	slots := &awgmTunSlots{
+		files:   make(map[string]*os.File),
+		waiters: make(map[string]chan struct{}),
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	done := make(chan *os.File, 1)
+	go func() { done <- slots.take("opkgtun1", 5*time.Second) }()
+
+	time.Sleep(50 * time.Millisecond) // ожидающий уже встал в очередь
+	if err := slots.attach("opkgtun1", r); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if got != r {
+			t.Fatalf("ожидающий получил не тот дескриптор: %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ожидающий не разбужен приходом дескриптора")
+	}
+}
+
+// Второй attach на занятый интерфейс — отказ, а не молчаливая подмена: сервер
+// уже читает из первого дескриптора.
+func TestAwgmTunSlotRejectsSecondAttach(t *testing.T) {
+	slots := &awgmTunSlots{
+		files:   make(map[string]*os.File),
+		waiters: make(map[string]chan struct{}),
+	}
+	r1, w1, _ := os.Pipe()
+	defer r1.Close()
+	defer w1.Close()
+	r2, w2, _ := os.Pipe()
+	defer r2.Close()
+	defer w2.Close()
+
+	if err := slots.attach("opkgtun0", r1); err != nil {
+		t.Fatalf("первый attach: %v", err)
+	}
+	if err := slots.attach("opkgtun0", r2); err == nil {
+		t.Fatal("второй attach на занятый интерфейс прошёл")
+	}
+}
+
+// Таймаут ожидания — не тупик: половина поднимется по-старому, своим TUN.
+func TestAwgmTunSlotTimesOut(t *testing.T) {
+	slots := &awgmTunSlots{
+		files:   make(map[string]*os.File),
+		waiters: make(map[string]chan struct{}),
+	}
+	if f := slots.take("opkgtun9", 80*time.Millisecond); f != nil {
+		t.Fatalf("дескриптор взялся из ниоткуда: %v", f)
 	}
 }

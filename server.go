@@ -1833,13 +1833,42 @@ func setupForwardRules(wgIface string) {
 
 // ==================== WireGuard ====================
 
-func startUserspaceWG(keys *wgKeys, wgPort int) (*device.Device, error) {
+// openWGTun отдаёт TUN WireGuard-половины.
+//
+// Под менеджером интерфейс уже создан и настроен в NDMS, и менеджер передаёт
+// его дескриптор командой attach-tun — сносить чужое устройство и поднимать
+// одноимённое своё нельзя: после выхода сервера запись NDMS осталась бы без
+// устройства, и роутер писал бы «no such device» каждые 30 секунд, пока её не
+// удалят руками.
+//
+// Без менеджера (ручной запуск, VPS) поведение прежнее: своё устройство,
+// снесённое перед созданием, — там за интерфейс никто больше не отвечает.
+func openWGTun() (tun.Device, error) {
+	if f := awgmTakeTun(wgIfaceName, awgmTunWait); f != nil {
+		dev, err := tun.CreateTUNFromFile(f, wgMTU)
+		if err != nil {
+			return nil, fmt.Errorf("WG TUN от менеджера (%s): %w", wgIfaceName, err)
+		}
+		log.Printf("[WG] TUN %s принят от менеджера", wgIfaceName)
+		return dev, nil
+	}
 	runCmdSilent("ip", "link", "del", wgIfaceName)
 	time.Sleep(100 * time.Millisecond)
-
-	tunDev, err := tun.CreateTUN(wgIfaceName, wgMTU)
+	dev, err := tun.CreateTUN(wgIfaceName, wgMTU)
 	if err != nil {
 		return nil, fmt.Errorf("CreateTUN: %w", err)
+	}
+	return dev, nil
+}
+
+// awgmTunWait — сколько ждать дескриптор от менеджера. Менеджер шлёт attach-tun
+// сразу после hello, но на mips сокет поднимается 4-5 секунд, и запас нужен.
+const awgmTunWait = 30 * time.Second
+
+func startUserspaceWG(keys *wgKeys, wgPort int) (*device.Device, error) {
+	tunDev, err := openWGTun()
+	if err != nil {
+		return nil, err
 	}
 
 	ifaceName, err := tunDev.Name()
@@ -2147,23 +2176,33 @@ func createRawTUNFile(name string) (*os.File, error) {
 }
 
 func newRawRouter() (*rawRouter, error) {
-	runCmdSilent("ip", "link", "del", rawIfaceName)
-	time.Sleep(100 * time.Millisecond)
+	// Под менеджером дескриптор приходит извне, а адрес, MTU и подъём
+	// интерфейса — забота NDMS: свои `ip`-команды поверх чужого интерфейса
+	// только конфликтовали бы с ним (см. openWGTun).
+	tunFile := awgmTakeTun(rawIfaceName, awgmTunWait)
+	managed := tunFile != nil
+	if managed {
+		log.Printf("[RAW] TUN %s принят от менеджера", rawIfaceName)
+	} else {
+		runCmdSilent("ip", "link", "del", rawIfaceName)
+		time.Sleep(100 * time.Millisecond)
 
-	tunFile, err := createRawTUNFile(rawIfaceName)
-	if err != nil {
-		return nil, fmt.Errorf("raw TUN: %w", err)
-	}
+		var err error
+		tunFile, err = createRawTUNFile(rawIfaceName)
+		if err != nil {
+			return nil, fmt.Errorf("raw TUN: %w", err)
+		}
 
-	for _, cmd := range [][]string{
-		{"ip", "addr", "add", rawServerCIDR, "dev", rawIfaceName},
-		{"ip", "link", "set", "mtu", fmt.Sprintf("%d", rawMTU), "dev", rawIfaceName},
-		{"ip", "link", "set", rawIfaceName, "up"},
-	} {
-		out, err := runCmd(cmd[0], cmd[1:]...)
-		if err != nil && !strings.Contains(out, "File exists") {
-			tunFile.Close()
-			return nil, fmt.Errorf("%s: %s", strings.Join(cmd, " "), out)
+		for _, cmd := range [][]string{
+			{"ip", "addr", "add", rawServerCIDR, "dev", rawIfaceName},
+			{"ip", "link", "set", "mtu", fmt.Sprintf("%d", rawMTU), "dev", rawIfaceName},
+			{"ip", "link", "set", rawIfaceName, "up"},
+		} {
+			out, err := runCmd(cmd[0], cmd[1:]...)
+			if err != nil && !strings.Contains(out, "File exists") {
+				tunFile.Close()
+				return nil, fmt.Errorf("%s: %s", strings.Join(cmd, " "), out)
+			}
 		}
 	}
 
