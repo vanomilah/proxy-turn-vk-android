@@ -42,12 +42,12 @@ func TestRawTunDispatcherUsesFlowHash(t *testing.T) {
 
 	// Диспетчеру нужен прикреплённый источник: ReadFrom пустого
 	// pendingPacketConn виснет на <-ready, и Shutdown не дожидается readLoop.
-	newDisp := func(t *testing.T, make func(context.Context, net.PacketConn, *Stats) *Dispatcher) *Dispatcher {
+	newDisp := func(t *testing.T, create func(context.Context, net.PacketConn, *Stats) *Dispatcher) *Dispatcher {
 		t.Helper()
 		pc := newPendingPacketConn()
 		src := newFakePC()
 		pc.Attach(src)
-		d := make(ctx, pc, &Stats{})
+		d := create(ctx, pc, &Stats{})
 		t.Cleanup(func() {
 			src.Close() // разблокирует readLoop, иначе Shutdown ждёт вечно
 			d.Shutdown()
@@ -55,8 +55,15 @@ func TestRawTunDispatcherUsesFlowHash(t *testing.T) {
 		return d
 	}
 
-	if d := newDisp(t, NewRawTunDispatcher); !d.flowHash {
-		t.Fatal("NewRawTunDispatcher: flowHash=false, ожидался true")
+	if d := newDisp(t, func(c context.Context, p net.PacketConn, s *Stats) *Dispatcher {
+		return NewRawTunDispatcher(c, p, s, true, 8)
+	}); !d.flowHash {
+		t.Fatal("NewRawTunDispatcher(flowHash=true): flowHash=false, ожидался true")
+	}
+	if d := newDisp(t, func(c context.Context, p net.PacketConn, s *Stats) *Dispatcher {
+		return NewRawTunDispatcher(c, p, s, false, 8)
+	}); d.flowHash {
+		t.Fatal("NewRawTunDispatcher(flowHash=false): flowHash=true, ожидался false (round-robin)")
 	}
 	if d := newDisp(t, NewDispatcher); d.flowHash {
 		t.Fatal("NewDispatcher: flowHash=true, ожидался round-robin")

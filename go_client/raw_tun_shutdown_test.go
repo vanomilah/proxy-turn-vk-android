@@ -92,7 +92,7 @@ func TestRawTunDispatcherShutdownWithoutTun(t *testing.T) {
 	stopPending := context.AfterFunc(ctx, func() { _ = pending.Close() })
 	defer stopPending()
 
-	disp := NewRawTunDispatcher(ctx, pending, NewStats())
+	disp := NewRawTunDispatcher(ctx, pending, NewStats(), false, 8)
 
 	// Дать readLoop дойти до ReadFrom и встать в ожидание прикрепления. Без
 	// паузы отмена успевает раньше первой итерации, readLoop выходит по

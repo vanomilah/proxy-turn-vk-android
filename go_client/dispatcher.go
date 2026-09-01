@@ -35,8 +35,8 @@ func putPktBuf(b []byte) {
 const (
 	returnChBuf = 384
 
-	// chunkSize — для vpn/socks (WireGuard): WG replay window переживает reorder между chunk'ами.
-	chunkSize = 8
+	// defaultChunkSize — размер чанка по умолчанию для round-robin (поведение qWDTT).
+	defaultChunkSize = 8
 )
 
 type WorkerSlot struct {
@@ -51,7 +51,8 @@ type Dispatcher struct {
 	workers      []*WorkerSlot
 	rrIndex      int
 	rrCount      int
-	flowHash     bool // rawtun: привязка TCP/UDP-потока к одному relay (нет WG replay)
+	flowHash     bool // rawtun: true для MIPS (eco), false для ARM/x86 (fast chunked)
+	chunkSize    int  // размер чанка при flowHash=false (по умолчанию 8)
 	ReturnCh     chan []byte
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -62,19 +63,23 @@ type Dispatcher struct {
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
-	return newDispatcher(ctx, localConn, stats, false)
+	return newDispatcher(ctx, localConn, stats, false, defaultChunkSize)
 }
 
-// NewRawTunDispatcher — uplink по 5-tuple hash: iperf/TCP не рвётся при N workers.
-func NewRawTunDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
-	return newDispatcher(ctx, localConn, stats, true)
+// NewRawTunDispatcher создает диспетчер для rawtun с настраиваемым flowHash и chunkSize.
+func NewRawTunDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats, flowHash bool, chunkSize int) *Dispatcher {
+	return newDispatcher(ctx, localConn, stats, flowHash, chunkSize)
 }
 
-func newDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats, flowHash bool) *Dispatcher {
+func newDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats, flowHash bool, chunkSize int) *Dispatcher {
+	if chunkSize <= 0 {
+		chunkSize = defaultChunkSize
+	}
 	dctx, dcancel := context.WithCancel(ctx)
 	d := &Dispatcher{
 		localConn: localConn,
 		flowHash:  flowHash,
+		chunkSize: chunkSize,
 		ReturnCh:  make(chan []byte, returnChBuf),
 		ctx:       dctx,
 		cancel:    dcancel,
@@ -204,7 +209,7 @@ func (d *Dispatcher) readLoop() {
 		case w.SendCh <- pkt:
 			sent = true
 			d.rrCount++
-			if d.rrCount >= chunkSize {
+			if d.rrCount >= d.chunkSize {
 				d.rrIndex = (idx + 1) % nw
 				d.rrCount = 0
 			}

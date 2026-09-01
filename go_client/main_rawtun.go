@@ -19,12 +19,14 @@ func runRawTunClient(
 	deviceID, password string,
 	stats *Stats,
 	pauseFlag *int32,
+	flowHash bool,
+	chunkSize int,
 ) {
 	pending := newPendingPacketConn()
 	stopPending := context.AfterFunc(ctx, func() { _ = pending.Close() })
 	defer stopPending()
 
-	disp := NewRawTunDispatcher(ctx, pending, stats)
+	disp := NewRawTunDispatcher(ctx, pending, stats, flowHash, chunkSize)
 	defer disp.Shutdown()
 
 	rawConfigCh := make(chan string, 1)
