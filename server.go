@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"mime/multipart"
@@ -2269,15 +2270,40 @@ func (r *rawRouter) downlinkLoop() {
 // пакета в его очередь, НЕ отпуская r.mu между выбором и отправкой. Раньше
 // это были два шага (pickDownlinkConn + enqueue) с отпущенным локом между
 // ними, и в это окно unregister успевал снять воркера и закрыть его sendCh —
-// отправка в закрытый канал роняла паникой весь сервер. Под общим локом
-// close уже не может опередить отправку: unregister закрывает канал только
-// после того, как снял воркера под r.mu, то есть после завершения любой
-// отправки, начатой до снятия.
-// Возвращает false, если сессии для dst нет.
+// ipv4FlowHash — canonical 5-tuple (symmetric with client dispatcher.go).
+func ipv4FlowHash(packet []byte) (uint32, bool) {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return 0, false
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl+4 {
+		return 0, false
+	}
+	proto := packet[9]
+	if proto != 6 && proto != 17 {
+		return 0, false
+	}
+	aIP := packet[12:16]
+	bIP := packet[16:20]
+	aPort := packet[ihl : ihl+2]
+	bPort := packet[ihl+2 : ihl+4]
+	if bytes.Compare(aIP, bIP) > 0 || (bytes.Equal(aIP, bIP) && bytes.Compare(aPort, bPort) > 0) {
+		aIP, bIP = bIP, aIP
+		aPort, bPort = bPort, aPort
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte{proto})
+	_, _ = h.Write(aIP)
+	_, _ = h.Write(aPort)
+	_, _ = h.Write(bIP)
+	_, _ = h.Write(bPort)
+	return h.Sum32(), true
+}
+
 func (r *rawRouter) dispatchDownlink(dst string, pkt []byte) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	w := r.pickDownlinkConnLocked(dst, len(pkt))
+	w := r.pickDownlinkConnLocked(dst, pkt)
 	if w == nil {
 		return false
 	}
@@ -2291,34 +2317,22 @@ func (r *rawRouter) dispatchDownlink(dst string, pkt []byte) bool {
 }
 
 // pickDownlinkConnLocked выбирает воркера для очередного downlink-пакета
-// клиента dst, размазывая нагрузку по всем его зарегистрированным воркерам
-// адаптивными чанками (см. downlinkChunkSizeFor) с предохранителем
-// downlinkMaxDwellMS на случай, если текущий relay начал тормозить.
+// клиента dst, распределяя нагрузку чанками по 8 пакетов по всем воркерам (поведение qWDTT).
 // Вызывается с уже взятым r.mu.
-func (r *rawRouter) pickDownlinkConnLocked(dst string, pktSize int) *downlinkWorker {
+func (r *rawRouter) pickDownlinkConnLocked(dst string, pkt []byte) *downlinkWorker {
 	cs := r.sessions[dst]
 	if cs == nil || len(cs.workers) == 0 {
 		return nil
 	}
-	if cs.rrIndex >= len(cs.workers) {
+	nw := len(cs.workers)
+	if cs.rrIndex >= nw {
 		cs.rrIndex = 0
 	}
-
-	now := time.Now().UnixMilli()
-	if cs.chunkStartTs == 0 {
-		cs.chunkStartTs = now
-	} else if now-cs.chunkStartTs >= downlinkMaxDwellMS {
-		cs.rrIndex = (cs.rrIndex + 1) % len(cs.workers)
-		cs.rrCount = 0
-		cs.chunkStartTs = now
-	}
-
 	w := cs.workers[cs.rrIndex]
 	cs.rrCount++
-	if cs.rrCount >= downlinkChunkSizeFor(pktSize) {
-		cs.rrIndex = (cs.rrIndex + 1) % len(cs.workers)
+	if cs.rrCount >= 8 {
+		cs.rrIndex = (cs.rrIndex + 1) % nw
 		cs.rrCount = 0
-		cs.chunkStartTs = now
 	}
 	return w
 }
