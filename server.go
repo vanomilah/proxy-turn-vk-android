@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -2157,10 +2158,37 @@ type rawClientSessions struct {
 	chunkStartTs int64 // unix millis начала текущего chunk'а — для downlinkMaxDwellMS
 }
 
+var (
+	rawFlowHash  bool
+	rawChunkSize int
+)
+
+func resolveRawFlowHash(val string) bool {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "true", "1", "yes", "on", "eco":
+		return true
+	case "false", "0", "no", "off", "fast":
+		return false
+	case "auto", "":
+		return runtime.GOARCH == "mips" || runtime.GOARCH == "mipsle"
+	default:
+		return runtime.GOARCH == "mips" || runtime.GOARCH == "mipsle"
+	}
+}
+
+func resolveRawChunkSize(val int) int {
+	if val <= 0 {
+		return 8
+	}
+	return val
+}
+
 type rawRouter struct {
 	file            *os.File
 	mu              sync.RWMutex
 	sessions        map[string]*rawClientSessions // keyed by assigned raw IP клиента
+	flowHash        bool                          // true = 5-tuple flow hash (CPU eco для MIPS), false = chunked round-robin (fast для ARM/x86)
+	chunkSize       int                           // размер чанка пакетов при flowHash=false (по умолчанию 8)
 	uplinkErrLogged uint32                        // чтобы не заспамить лог при устойчивой ошибке записи
 	firstUplink     uint32
 	firstDownlink   uint32
@@ -2235,9 +2263,15 @@ func newRawRouter() (*rawRouter, error) {
 		return nil, err
 	}
 
-	r := &rawRouter{file: tunFile, sessions: make(map[string]*rawClientSessions)}
+	r := &rawRouter{
+		file:      tunFile,
+		sessions:  make(map[string]*rawClientSessions),
+		flowHash:  rawFlowHash,
+		chunkSize: resolveRawChunkSize(rawChunkSize),
+	}
 	go r.downlinkLoop()
-	log.Printf("[RAW] TUN %s поднят (%s), MTU %d", rawIfaceName, rawServerCIDR, rawMTU)
+	log.Printf("[RAW] TUN %s поднят (%s), MTU %d | flow-hash: %v (chunk=%d, arch=%s)",
+		rawIfaceName, rawServerCIDR, rawMTU, r.flowHash, r.chunkSize, runtime.GOARCH)
 	return r, nil
 }
 
@@ -2316,8 +2350,9 @@ func (r *rawRouter) dispatchDownlink(dst string, pkt []byte) bool {
 	return true
 }
 
-// pickDownlinkConnLocked выбирает воркера для очередного downlink-пакета
-// клиента dst, распределяя нагрузку чанками по 8 пакетов по всем воркерам (поведение qWDTT).
+// pickDownlinkConnLocked выбирает воркера для очередного downlink-пакета клиента dst.
+// При flowHash = true привязывает поток по 5-tuple hash (разгрузка CPU на MIPS).
+// При flowHash = false распределяет нагрузку чанками по chunkSize пакетов по всем воркерам (максимальная скорость на ARM/x86, поведение qWDTT).
 // Вызывается с уже взятым r.mu.
 func (r *rawRouter) pickDownlinkConnLocked(dst string, pkt []byte) *downlinkWorker {
 	cs := r.sessions[dst]
@@ -2325,12 +2360,17 @@ func (r *rawRouter) pickDownlinkConnLocked(dst string, pkt []byte) *downlinkWork
 		return nil
 	}
 	nw := len(cs.workers)
+	if r.flowHash {
+		if h, ok := ipv4FlowHash(pkt); ok {
+			return cs.workers[int(h%uint32(nw))]
+		}
+	}
 	if cs.rrIndex >= nw {
 		cs.rrIndex = 0
 	}
 	w := cs.workers[cs.rrIndex]
 	cs.rrCount++
-	if cs.rrCount >= 8 {
+	if cs.rrCount >= r.chunkSize {
 		cs.rrIndex = (cs.rrIndex + 1) % nw
 		cs.rrCount = 0
 	}
@@ -2745,7 +2785,11 @@ func main() {
 	flagNatIface := flag.String("nat-if", "", "egress interface for MASQUERADE")
 	flag.IntVar(&rawDownlinkRate, "raw-downlink-rate", rawDownlinkRate, "лимит downlink на одну raw-аллокацию, байт/с (0 = без пейсера)")
 	flag.IntVar(&rawDownlinkBurst, "raw-downlink-burst", rawDownlinkBurst, "burst пейсера downlink, байт (0 = без пейсера)")
+	flagRawFlowHash := flag.String("raw-flow-hash", "auto", "привязка downlink потоков: auto (по архитектуре CPU: true для mips/mipsel, false для arm/arm64/x86), true (eco/mips), false (fast/chunked)")
+	flagRawChunkSize := flag.Int("raw-chunk-size", 0, "размер чанка пакетов при raw-flow-hash=false (0 = по умолчанию 8)")
 	flag.Parse()
+	rawFlowHash = resolveRawFlowHash(*flagRawFlowHash)
+	rawChunkSize = resolveRawChunkSize(*flagRawChunkSize)
 	dns = *dnsFlag
 	keeneticNoNAT = *flagNoNAT
 	keeneticNatIface = strings.TrimSpace(*flagNatIface)
