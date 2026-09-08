@@ -2794,8 +2794,7 @@ func main() {
 
 	// До слушателей: первый GETCONF уже зовёт getNextIP.
 	addrPoolStart = poolStart(keys.serverPublic)
-	log.Printf("[WG] Пул адресов: обход с индекса %d (10.66.%d.%d / 10.70.%d.%d)",
-		addrPoolStart, addrPoolStart>>8, addrPoolStart&0xff, addrPoolStart>>8, addrPoolStart&0xff)
+	log.Printf("[WG] Пул адресов: обход 10.66.0.0/16 и 10.70.0.0/16 с индекса %d", addrPoolStart)
 
 	enableBBR()
 

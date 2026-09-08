@@ -96,8 +96,10 @@ func TestPool_ExistingDevicesKeepAddresses(t *testing.T) {
 	setTestDB(t, "", map[string]*PasswordEntry{})
 	db.Devices["old"] = &ClientDevice{DeviceID: "old", IP: "10.66.0.2", RawIP: "10.70.0.2"}
 	withPoolStart(t, 0x1000)
-	_ = getNextIP()
-	_ = getNextRawIP()
+	wg, raw := getNextIP(), getNextRawIP()
+	if wg == "10.66.0.2" || raw == "10.70.0.2" {
+		t.Fatalf("выдан занятый адрес: wg=%q raw=%q", wg, raw)
+	}
 	if db.Devices["old"].IP != "10.66.0.2" || db.Devices["old"].RawIP != "10.70.0.2" {
 		t.Fatalf("старое устройство перенумеровано: %+v", db.Devices["old"])
 	}
