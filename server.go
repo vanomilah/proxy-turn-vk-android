@@ -483,23 +483,57 @@ func passwordAccepted(password string) (*PasswordEntry, bool) {
 	return entry, !isPasswordExpired(entry)
 }
 
+// addrPoolStart — смещение обхода пулов 10.66.0.0/16 и 10.70.0.0/16, выведенное
+// из публичного ключа сервера (см. poolStart). Ноль = обход с начала, как в
+// апстриме. Смысл (#869 awg-manager): два независимых сервера с одинаковым
+// числом абонентов иначе выдают одному клиенту один адрес, и NDMS на клиенте
+// отвергает второй OpkgTun с тем же /32. Выданные адреса (db.Devices) не
+// перенумеровываются: они зашиты в allowed_ip пиров и в конфиги абонентов.
+var addrPoolStart uint16
+
+// poolStart — первые два байта sha256 от байт публичного ключа. Ключ живёт с
+// сервером всю жизнь (wg-keys.dat), поэтому смещение стабильно между
+// перезапусками; битый ключ даёт 0.
+func poolStart(serverPublicB64 string) uint16 {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(serverPublicB64))
+	if err != nil || len(raw) == 0 {
+		return 0
+	}
+	sum := sha256.Sum256(raw)
+	return binary.BigEndian.Uint16(sum[:2])
+}
+
+// nextPoolIP обходит prefix.0.0/16 по кругу с addrPoolStart, пропуская хосты
+// .0/.255, адреса из skip и занятые.
+func nextPoolIP(prefix string, used map[string]bool, skip ...string) string {
+	for i := 0; i < 65536; i++ {
+		idx := (int(addrPoolStart) + i) % 65536
+		b3, b4 := idx>>8, idx&0xff
+		if b4 == 0 || b4 == 255 {
+			continue
+		}
+		ip := fmt.Sprintf("%s.%d.%d", prefix, b3, b4)
+		skipped := false
+		for _, s := range skip {
+			if ip == s {
+				skipped = true
+				break
+			}
+		}
+		if skipped || used[ip] {
+			continue
+		}
+		return ip
+	}
+	return ""
+}
+
 func getNextIP() string {
 	used := make(map[string]bool)
 	for _, dev := range db.Devices {
 		used[dev.IP] = true
 	}
-	for b3 := 0; b3 <= 255; b3++ {
-		for b4 := 1; b4 <= 254; b4++ {
-			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
-			if ip == "10.66.66.1" || ip == "10.66.0.1" {
-				continue
-			}
-			if !used[ip] {
-				return ip
-			}
-		}
-	}
-	return ""
+	return nextPoolIP("10.66", used, wgServerAddr, "10.66.0.1")
 }
 
 func getNextRawIP() string {
@@ -509,18 +543,7 @@ func getNextRawIP() string {
 			used[dev.RawIP] = true
 		}
 	}
-	for b3 := 0; b3 <= 255; b3++ {
-		for b4 := 1; b4 <= 254; b4++ {
-			ip := fmt.Sprintf("10.70.%d.%d", b3, b4)
-			if ip == rawServerAddr || ip == rawGatewayAddr {
-				continue
-			}
-			if !used[ip] {
-				return ip
-			}
-		}
-	}
-	return ""
+	return nextPoolIP("10.70", used, rawServerAddr, rawGatewayAddr)
 }
 
 func botLoop(token string, adminIDstr string, wgDev *device.Device) {
