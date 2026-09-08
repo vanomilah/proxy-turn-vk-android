@@ -2792,6 +2792,11 @@ func main() {
 		log.Fatalf("[WG] Ключи: %v", err)
 	}
 
+	// До слушателей: первый GETCONF уже зовёт getNextIP.
+	addrPoolStart = poolStart(keys.serverPublic)
+	log.Printf("[WG] Пул адресов: обход с индекса %d (10.66.%d.%d / 10.70.%d.%d)",
+		addrPoolStart, addrPoolStart>>8, addrPoolStart&0xff, addrPoolStart>>8, addrPoolStart&0xff)
+
 	enableBBR()
 
 	wgDev, err = startUserspaceWG(keys, *wgPort)
